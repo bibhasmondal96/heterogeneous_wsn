@@ -6,15 +6,15 @@ import sys
 import numpy as np
 class Network:
     class Node:
-        def __init__(self, name,dist_range=[1,50]):
+        def __init__(self, name,dist_range=[1,100],power=5):
             self.name = name
-            self.position = [random.randint(*dist_range), random.randint(*dist_range)]#
+            self.position = [random.randint(*dist_range), random.randint(*dist_range)]
             self.sent = 0
             self.received = 0
-            self.power = 5
-            self.range = 25
-            self.threshold = {"send": 1.5, "receive": 0.5}
-            self.loss = {"send":0.005,"receive":0.002}
+            self.power = power
+            self.range = power**2
+            self.transferThreshold = {"send": 1.5, "receive": 0.5}
+            self.transferLoss = {"send":0.005,"receive":0.002}
     
     def __init__(self,no):
         self.travers = []
@@ -66,22 +66,22 @@ class Network:
     def packetTransfer(self, src, dest, no):
         ''' First receive one packet and then send it to destination'''
         source = self.nodes[src]
-        maxSent = int((source.power - source.threshold["send"])/source.loss["send"])
+        maxSent = int((source.power - source.transferThreshold["send"])/source.transferLoss["send"])
         maxSent = no if maxSent > no else  maxSent
-        sourcePowerConsumed = source.loss["send"]*maxSent
+        sourcePowerConsumed = source.transferLoss["send"]*maxSent
         source.power -= sourcePowerConsumed
-        # source.range -= int(source.loss["send"]*maxSent)**2   #This will not work because the energy loss for small no of packet is tends to 0. so range does no decreases.
+        # source.range -= int(source.transferLoss["send"]*maxSent)**2   #This will not work because the energy transferLoss for small no of packet is tends to 0. so range does no decreases.
         source.range = round(source.power**2)
         source.sent+=maxSent
         destination = self.nodes[dest]
-        totalThreshold = destination.threshold["receive"] + destination.threshold["send"]
-        totalLoss = destination.loss["receive"]+destination.loss["send"]
+        totalThreshold = destination.transferThreshold["receive"] + destination.transferThreshold["send"]
+        totalLoss = destination.transferLoss["receive"]+destination.transferLoss["send"]
         maxRecv = int((destination.power - totalThreshold)/totalLoss)
-        maxRecv += int((destination.power-totalLoss*maxRecv)/destination.threshold["receive"])  # It recieve but can't send
+        maxRecv += int((destination.power-totalLoss*maxRecv)/destination.transferThreshold["receive"])  # It recieve but can't send
         maxRecv = maxSent if maxRecv > maxSent else maxRecv
-        destinationPowerConsumed = destination.loss["receive"]*maxRecv
+        destinationPowerConsumed = destination.transferLoss["receive"]*maxRecv
         destination.power -= destinationPowerConsumed
-        # destination.range -= int(destination.loss["receive"]*maxRecv)**2      #This will not work because the energy loss for small no of packet is tends to 0. so range does no decreases.
+        # destination.range -= int(destination.transferLoss["receive"]*maxRecv)**2      #This will not work because the energy transferLoss for small no of packet is tends to 0. so range does no decreases.
         destination.range = round(destination.power**2)
         destination.received += maxRecv
         tottalPowerConsumed = sourcePowerConsumed + destinationPowerConsumed
@@ -99,7 +99,7 @@ class Network:
             sent,powerConsumed = self.packetTransfer(self.path[i], self.path[i+1], no)
             totalPowerConsumed += powerConsumed
             if no != sent:
-                return False,averagePowerConsumed
+                return False,totalPowerConsumed/len(self.nodes)
             no=sent
         averagePowerConsumed = totalPowerConsumed/len(self.nodes)
         return True,averagePowerConsumed
@@ -110,7 +110,7 @@ class Network:
                 isAllReach,averagePowerConsumed = self.sentPacket(node, destination, noOfPacket)
                 self.avgPowConsumedPerSeason = averagePowerConsumed/(len(self.nodes)-1) # -1 for ignoring destination->destination packet transfer
                 if not isAllReach:
-                    self.barPlot()
+                    # self.barPlot()
                     return
 
     def adjacencyMatrix(self):
@@ -201,6 +201,44 @@ class Network:
                     plt.plot(x, y, '-o', color=plt.cm.prism(i))
                     
                 
+    def lorentzCurve(self):
+        x = []
+        y = []
+        for i in range(len(self.nodes)):
+            neighboursPower = []
+            for j in range(len(self.nodes)):
+                if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
+                    neighboursPower.append(self.nodes[j+1].power)
+            y.append(sum(neighboursPower))
+            x.append((i+1)/len(self.nodes))
+        y.sort()
+        b = y.copy()
+        n = len(self.nodes)
+        T = sum(y)
+        x = [0]+x
+        y = [0]+[sum(y[:i])/T for i in range(1,len(y)+1)]
+        # Caluclating gini coeff
+        polygonArea = (1/(n*T))*sum([(n-i+1/2)*b[i-1] for i in range(1,n+1)])
+        giniCoefficient = 1-2*polygonArea
+        # Lorenz curve
+        plt.plot(x,y,label="Lorenz curve")
+        # Line of perfect equality
+        plt.plot([x[0],x[-1]],[y[0],y[-1]],label="Line of perfect equality")
+        # Line of perfect inequality
+        plt.plot([x[0],x[-1],x[-1]],[y[0],y[0],y[-1]],color='black',label="Line of perfect inequality")
+        plt.text(0.2, 0.7,"Gini coefficient: %s"%round(giniCoefficient,2),horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
+        plt.xlabel('Nodes(%)')
+        plt.ylabel('Energy(%)')
+        plt.gcf().canvas.set_window_title('Gini Index')
+        ticks = list(map(lambda v:v/100,range(0,101,10)))
+        plt.title("Energy(%) vs Nodes(%)", fontsize='large')
+        plt.xticks(ticks,ticks)
+        plt.yticks(ticks,ticks)
+        plt.grid(True)
+        plt.legend()
+        plt.show()
+
+
     def barPlot(self):
         x=[]
         y=[]
@@ -225,24 +263,16 @@ class Network:
         y=[]
         c=[]
         s=[]
-        patches = []
         for node in self.nodes.values():
             x.append(node.position[0])
             y.append(node.position[1])
             c.append(node.power/5.0)
             s.append(3.14*25**2) # mult 8.1
             plt.text(x[-1], y[-1],node.name,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
-            # patches.append(mpatches.Wedge((x[-1], y[-1]),node.range, 0, 360,label="hghjghjghjg",alpha=0.4,color = plt.cm.RdYlGn(node.power*1.1)))
-            # plt.gca().add_patch(patches[-1])
-        # p = PatchCollection(patches,alpha=0.4)
-        # p.set_array(np.array(c))
-        # plt.gca().add_collection(p)
         # plt.rcParams["figure.figsize"] = [15,15]
         plt.scatter(x, y, s=s, c=c, alpha=0.6)
         # self.neighbourConnectionPlot()
         # plt.gca().set_aspect("equal")
-        # plt.xticks(range(-50, 150, 25))
-        # plt.yticks(range(-50, 150, 25))
         plt.grid(True)
         plt.show()
 
@@ -276,25 +306,23 @@ if __name__ == "__main__":
     x = []
     y = []
     nets = []
-    # for no in range(20,201,20):
-    #     net = Network(no)
-    #     net.startSeason(1,no)
-    #     y.append(net.avgPowConsumedPerSeason)
-    #     x.append(no)
-    #     nets.append(net)
-    #     # break
-    net = Network(20)
-    for _ in range(4):
-        net.startSeason(1,20)
-    # plt.plot(x,y)
-    # plt.xlabel('Nodes')
-    # plt.ylabel('Energy Consumed(%)')
-    # plt.gcf().canvas.set_window_title('Heterogenious Calculation')
-    # plt.title("Energy Consumed vs Nodes", fontsize='large')
-    # plt.xticks(x,x)
-    # plt.grid(True)
-    # plt.show()
-    # nets[0].scatterPlot()
-    # nets[0].bandPlot()
-    # nets[0].neighboursStatusStackPlot()
-    net.neighboursStatusPlot()
+    for no in range(20,201,20):
+        net = Network(no)
+        for _ in range(30):
+            net.startSeason(1,no)
+        nets.append(net)
+        y.append(net.avgPowConsumedPerSeason)
+        x.append(no)
+    plt.plot(x,y)
+    plt.xlabel('Nodes')
+    plt.ylabel('Energy Consumed(%)')
+    plt.gcf().canvas.set_window_title('Heterogenious Calculation')
+    plt.title("Energy Consumed vs Nodes", fontsize='large')
+    plt.xticks(x,x)
+    plt.grid(True)
+    plt.show()
+    nets[0].scatterPlot()
+    nets[0].bandPlot()
+    nets[0].neighboursStatusStackPlot()
+    for net in nets:
+        net.lorentzCurve()
