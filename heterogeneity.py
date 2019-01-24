@@ -1,3 +1,5 @@
+import threading
+
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
@@ -13,8 +15,13 @@ class Heterogeneity(tk.Tk):
 
     def __init__(self, *args, **kwargs):
         tk.Tk.__init__(self, *args, **kwargs)
-        # tk.Tk.iconbitmap(self, default="clienticon.ico")
+        tk.Tk.iconbitmap(self, default="icon.ico")
         tk.Tk.wm_title(self, "Heterogeneity")
+
+        self.progress = ttk.Progressbar(self, orient="horizontal", mode="determinate" ,value="0")
+        self.progress.pack(side="top",fill="x",padx=5,pady=5)
+        self.progress.grid_rowconfigure(0, weight=1)
+        self.progress.grid_columnconfigure(0, weight=1)
 
         container = tk.Frame(self)
         container.pack(side="left", fill="both", expand = True)
@@ -52,7 +59,19 @@ class ControlView(tk.Frame):
         button6 = ttk.Button(self, text="Lorentz Curve", command=self.lorentzCureve)
         button6.pack(pady=10,padx=10)
 
+        button7 = ttk.Button(self, text="Reset", command=self.reset)
+        button7.pack(pady=10,padx=10)
+
+    def reset(self):
+        self.controller.progress['value'] = 0
+        self.controller.frame1.fig.clear()
+        self.controller.frame1.canvas.draw()
+        self.controller.networks = []
+        self.controller.frame2.listbox.delete(0,'end')
+        self.controller.progress['value'] = 100
+
     def allNetworkStatus(self):
+        self.controller.progress['value'] = 0
         x = []
         y = []
         parent = self.controller.frame2
@@ -72,6 +91,7 @@ class ControlView(tk.Frame):
         plt.set_xticks(x,x)
         plt.grid(True)
         self.controller.frame1.canvas.draw()
+        self.controller.progress['value'] = 100
 
     def networkStruct(self):
         self.controller.frame1.draw("scatterPlot")
@@ -84,9 +104,11 @@ class ControlView(tk.Frame):
 
 
     def network(self):
+        self.controller.progress['value'] = 0
         parent = self.controller.frame2
         no = simpledialog.askinteger("Node", "Enter the no of node.", parent=parent,initialvalue=20,minvalue=2, maxvalue=500)
         if no:parent.insert(no)
+        self.controller.progress['value'] = 100
 
 
     def season(self):
@@ -95,9 +117,13 @@ class ControlView(tk.Frame):
         inds = listbox.curselection()
         if inds:
             no = simpledialog.askinteger("Season", "Enter the no of season.", parent=parent,initialvalue=1,minvalue=0, maxvalue=100)
-            for ind in inds:
-                for _ in range(no):
-                    self.controller.networks[ind].startSeason(1,int(listbox.get(ind)[9:-1]))
+            def job():
+                self.controller.progress['value'] = 0
+                for i in range(len(inds)):
+                    for j in range(no):
+                        self.controller.networks[inds[i]].startSeason(1,int(listbox.get(inds[i])[9:-1]))
+                        self.controller.progress['value'] = (i*no+j+1)*100/(no*len(inds))
+            threading.Thread(target=job,args=()).start()
         else:
             messagebox.showwarning("Warning","Please select a network from list")
 
@@ -128,6 +154,7 @@ class GraphView(tk.Frame):
         self.canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
     def draw(self,plotFuncName):
+        self.controller.progress['value'] = 0
         self.fig.clear()
         plt = self.fig.add_subplot(111)
         parent = self.controller.frame2
@@ -141,6 +168,7 @@ class GraphView(tk.Frame):
                 messagebox.showwarning("Warning","Please select one item")
         else:
             messagebox.showwarning("Warning","Please select a network from list")
+        self.controller.progress['value'] = 100
 
 app = Heterogeneity()
 app.mainloop()
