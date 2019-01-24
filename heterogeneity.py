@@ -1,328 +1,146 @@
-'''Heterogenetic calculation on Network'''
-import matplotlib.pyplot as plt
-import random
-import math
-import sys
-import numpy as np
-class Network:
-    class Node:
-        def __init__(self, name,dist_range=[1,100],power=5):
-            self.name = name
-            self.position = [random.randint(*dist_range), random.randint(*dist_range)]
-            self.sent = 0
-            self.received = 0
-            self.power = power
-            self.range = power**2
-            self.transferThreshold = {"send": 1.5, "receive": 0.5}
-            self.transferLoss = {"send":0.005,"receive":0.002}
-    
-    def __init__(self,no):
-        self.travers = []
-        self.path=[]
-        self.dp = [[None for _ in range(no)] for _ in range(no)]
-        self.INF = 2**16
-        self.avgPowConsumedPerSeason = 0
-        self.nodes = {}
-        for i in range(no):
-            self.nodes[i+1]=self.Node(i+1)
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-    def printMatrix(self, mat):
-        for i in range(len(mat)):
-            for j in range(len(mat[i])):
-                print("%-5s" % mat[i][j], end='')
-            print()
-    
-    def distance(self,src,dest):
-        return math.sqrt((self.nodes[src].position[0]-self.nodes[dest].position[0])**2 + \
-            (self.nodes[src].position[1]-self.nodes[dest].position[1])**2)
-    
-    def minDist(self, src, dest):
-        self.travers.append(src)
-        if self.dp[src-1][dest-1] is not None:
-            return self.dp[src-1][dest-1] # -1 because node indexing start from 1
-        else:
-            dist = self.distance(src,dest)
+import tkinter as tk
+from tkinter import ttk
+from tkinter import simpledialog,messagebox,Listbox
 
-            if dist > self.nodes[src].range:
-                dist=self.INF
-            elif not self.path:
-                self.path=[src,dest]
+from network import Network
 
-            for node in self.nodes.values():
-                if node.name not in self.travers and node.name != dest and self.distance(src, node.name) <= self.nodes[src].range:
-                    distan = self.distance(src, node.name) + self.minDist(node.name, dest)
-                    if distan < dist:
-                        self.travers.append(dest)
-                        self.path = self.travers.copy()
-                        self.travers.pop()  # for last dest
-                        self.travers.pop()  # for continue check next node go get actual min distance
-                        dist = distan
-                    else:
-                        # print(self.travers)
-                        self.travers.pop() # one by one pop of insered element upto proper position
-            self.dp[src-1][dest-1] = dist # memorization
-            return dist
+class Heterogeneity(tk.Tk):
 
-    def packetTransfer(self, src, dest, no):
-        ''' First receive one packet and then send it to destination'''
-        source = self.nodes[src]
-        maxSent = int((source.power - source.transferThreshold["send"])/source.transferLoss["send"])
-        maxSent = no if maxSent > no else  maxSent
-        sourcePowerConsumed = source.transferLoss["send"]*maxSent
-        source.power -= sourcePowerConsumed
-        # source.range -= int(source.transferLoss["send"]*maxSent)**2   #This will not work because the energy transferLoss for small no of packet is tends to 0. so range does no decreases.
-        source.range = round(source.power**2)
-        source.sent+=maxSent
-        destination = self.nodes[dest]
-        totalThreshold = destination.transferThreshold["receive"] + destination.transferThreshold["send"]
-        totalLoss = destination.transferLoss["receive"]+destination.transferLoss["send"]
-        maxRecv = int((destination.power - totalThreshold)/totalLoss)
-        maxRecv += int((destination.power-totalLoss*maxRecv)/destination.transferThreshold["receive"])  # It recieve but can't send
-        maxRecv = maxSent if maxRecv > maxSent else maxRecv
-        destinationPowerConsumed = destination.transferLoss["receive"]*maxRecv
-        destination.power -= destinationPowerConsumed
-        # destination.range -= int(destination.transferLoss["receive"]*maxRecv)**2      #This will not work because the energy transferLoss for small no of packet is tends to 0. so range does no decreases.
-        destination.range = round(destination.power**2)
-        destination.received += maxRecv
-        tottalPowerConsumed = sourcePowerConsumed + destinationPowerConsumed
-        return maxRecv,tottalPowerConsumed
+    def __init__(self, *args, **kwargs):
+        tk.Tk.__init__(self, *args, **kwargs)
+        # tk.Tk.iconbitmap(self, default="clienticon.ico")
+        tk.Tk.wm_title(self, "Heterogeneity")
 
-    def sentPacket(self,src,dest,no,delay=False):
-        self.travers = []
-        self.path = []
-        self.dp = self.dp = [[None for _ in self.nodes] for _ in self.nodes] # for memorization
-        dist = self.minDist(src,dest)   # Path will be calculate by this func
-        if not self.path:
-            no = 0
-        totalPowerConsumed = 0
-        for i in range(len(self.path)-1):
-            sent,powerConsumed = self.packetTransfer(self.path[i], self.path[i+1], no)
-            totalPowerConsumed += powerConsumed
-            if no != sent:
-                return False,totalPowerConsumed/len(self.nodes)
-            no=sent
-        averagePowerConsumed = totalPowerConsumed/len(self.nodes)
-        return True,averagePowerConsumed
+        container = tk.Frame(self)
+        container.pack(side="left", fill="both", expand = True)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
 
-    def startSeason(self,noOfPacket,destination):
-        for node in self.nodes.keys():
-            if node != destination:
-                isAllReach,averagePowerConsumed = self.sentPacket(node, destination, noOfPacket)
-                self.avgPowConsumedPerSeason = averagePowerConsumed/(len(self.nodes)-1) # -1 for ignoring destination->destination packet transfer
-                if not isAllReach:
-                    # self.barPlot()
-                    return
+        self.frame1 = GraphView(container, self)
+        self.frame1.grid(row=0, column=0,sticky="nsew")
+        self.frame2 = ListView(container, self)
+        self.frame2.grid(row=0, column=2,sticky="nsew")
+        self.frame3 = ControlView(container,self)
+        self.frame3.grid(row=0, column=3,sticky="nsew")
 
-    def adjacencyMatrix(self):
-        print("\nAdjacency Matrix:")
-        adjMat = []
-        for i in range(len(self.nodes)):
-            adjMat.append([])
-            for j in range(len(self.nodes)):
-                if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
-                    adjMat[i].append(1)
-                else:
-                    adjMat[i].append(0)
-        self.printMatrix(adjMat)
-        return adjMat
+        self.networks = []
 
-    def neighboursStatusStackPlot(self):
-        red=[]
-        green=[]
-        for i in range(len(self.nodes)):
-            r = []
-            g = []
-            for j in range(len(self.nodes)):
-                if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
-                    if self.nodes[j+1].power < 5*0.99:
-                        r.append(self.nodes[j+1].name)
-                    else:
-                        g.append(self.nodes[j+1].name)
-            if g:
-                green.append(len(g)*100/len(r+g))
-                plt.text(i,5,len(g),horizontalalignment='center',verticalalignment='center')
-            else:
-                green.append(0)
-            if r:
-                red.append(len(r)*100/len(r+g))
-                plt.text(i,green[-1]+5,len(r),horizontalalignment='center',verticalalignment='center')
-            else:
-                red.append(0)
-        plt.bar(range(len(self.nodes)),green,width = 0.75,color='g',label='Moderate Power')
-        plt.bar(range(len(self.nodes)),red,width = 0.75,color='r',bottom=green,label='Low Power')
-        plt.xticks(range(0,len(self.nodes)),range(1,len(self.nodes)+1))
-        plt.yticks(range(0, 150, 10))
-        plt.xlabel('Node no')
-        plt.ylabel('Neighbours(%)')
-        plt.gcf().canvas.set_window_title('Heterogenious Calculation')
-        plt.title("Neighbour Status vs Nodes no", fontsize='large')
-        plt.legend()
-        plt.show()
+class ControlView(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self,parent)
+        self.controller = controller
+        button1 = ttk.Button(self, text="Create netrork", command=lambda: self.network())
+        button1.pack(pady=10,padx=10)
 
-    def neighboursStatusPlot(self):
-        red=[]
-        green=[]
-        for i in range(len(self.nodes)):
-            r = []
-            g = []
-            for j in range(len(self.nodes)):
-                if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
-                    if self.nodes[j+1].power < 5*0.99:
-                        r.append(self.nodes[j+1].name)
-                    else:
-                        g.append(self.nodes[j+1].name)
-            if g:
-                green.append(len(g)*100/len(r+g))
-                plt.text(i-0.20,5,len(g),horizontalalignment='center',verticalalignment='center')
-            else:
-                green.append(0)
-            if r:
-                red.append(len(r)*100/len(r+g))
-                plt.text(i+0.20,5,len(r),horizontalalignment='center',verticalalignment='center')
-            else:
-                red.append(0)
-        plt.bar(list(map(lambda x:x-0.20,range(len(self.nodes)))),green,width = 0.40,color='g',label='Moderate Power')
-        plt.bar(list(map(lambda x:x+0.20,range(len(self.nodes)))),red,width = 0.40,color='r',label='Low Power')
-        plt.xticks(range(0,len(self.nodes)),range(1,len(self.nodes)+1))
-        plt.yticks(range(0, 150, 10))
-        plt.xlabel('Node no')
-        plt.ylabel('Neighbours(%)')
-        plt.gcf().canvas.set_window_title('Heterogenious Calculation')
-        plt.title("Neighbour Status vs Nodes no", fontsize='large')
-        plt.legend()
-        plt.show()
+        button2 = ttk.Button(self, text="Start season", command=self.season)
+        button2.pack(pady=10,padx=10)
 
-    def neighbourConnectionPlot(self):
-        for i in range(len(self.nodes)):
-            for j in range(len(self.nodes)):
-                if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
-                    x = [self.nodes[i+1].position[0],self.nodes[j+1].position[0]]
-                    y = [self.nodes[i+1].position[1],self.nodes[j+1].position[1]]
-                    plt.plot(x, y, '-o', color=plt.cm.prism(i))
-                    
-                
-    def lorentzCurve(self):
+        button3 = ttk.Button(self, text="Energy Stat", command=self.allNetworkStatus)
+        button3.pack(pady=10,padx=10)
+
+        button4 = ttk.Button(self, text="Network Structure", command=self.networkStruct)
+        button4.pack(pady=10,padx=10)
+
+        button5 = ttk.Button(self, text="Neighbour Stat", command=self.neighbourStat)
+        button5.pack(pady=10,padx=10)
+
+        button6 = ttk.Button(self, text="Lorentz Curve", command=self.lorentzCureve)
+        button6.pack(pady=10,padx=10)
+
+    def allNetworkStatus(self):
         x = []
         y = []
-        for i in range(len(self.nodes)):
-            neighboursPower = []
-            for j in range(len(self.nodes)):
-                if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
-                    neighboursPower.append(self.nodes[j+1].power)
-            y.append(sum(neighboursPower))
-            x.append((i+1)/len(self.nodes))
-        y.sort()
-        b = y.copy()
-        n = len(self.nodes)
-        T = sum(y)
-        x = [0]+x
-        y = [0]+[sum(y[:i])/T for i in range(1,len(y)+1)]
-        # Caluclating gini coeff
-        polygonArea = (1/(n*T))*sum([(n-i+1/2)*b[i-1] for i in range(1,n+1)])
-        giniCoefficient = 1-2*polygonArea
-        # Lorenz curve
-        plt.plot(x,y,label="Lorenz curve")
-        # Line of perfect equality
-        plt.plot([x[0],x[-1]],[y[0],y[-1]],label="Line of perfect equality")
-        # Line of perfect inequality
-        plt.plot([x[0],x[-1],x[-1]],[y[0],y[0],y[-1]],color='black',label="Line of perfect inequality")
-        plt.text(0.2, 0.7,"Gini coefficient: %s"%round(giniCoefficient,2),horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
-        plt.xlabel('Nodes(%)')
-        plt.ylabel('Energy(%)')
-        plt.gcf().canvas.set_window_title('Gini Index')
-        ticks = list(map(lambda v:v/100,range(0,101,10)))
-        plt.title("Energy(%) vs Nodes(%)", fontsize='large')
-        plt.xticks(ticks,ticks)
-        plt.yticks(ticks,ticks)
+        parent = self.controller.frame2
+        listbox = parent.listbox
+        inds = listbox.curselection()
+        networks = sorted(map(self.controller.networks.__getitem__,inds),key = lambda x:len(x.nodes))
+        for network in networks:
+            y.append(network.avgPowConsumedPerSeason)
+            x.append(len(network.nodes))
+        fig = self.controller.frame1.fig
+        fig.clear()
+        plt = fig.add_subplot(111)
+        plt.plot(x,y)
+        plt.set_xlabel('Nodes')
+        plt.set_ylabel('Energy Consumed(%)')
+        plt.set_title("Energy Consumed vs Nodes", fontsize='large')
+        plt.set_xticks(x,x)
         plt.grid(True)
-        plt.legend()
-        plt.show()
+        self.controller.frame1.canvas.draw()
+
+    def networkStruct(self):
+        self.controller.frame1.draw("scatterPlot")
+
+    def neighbourStat(self):
+        self.controller.frame1.draw("neighboursStatusStackPlot")
+
+    def lorentzCureve(self):
+        self.controller.frame1.draw("lorentzCurve")
 
 
-    def barPlot(self):
-        x=[]
-        y=[]
-        color=[]
-        for node in self.nodes.values():
-            x.append(node.name)
-            y.append(round((5-node.power)*100/5.0))
-            color.append(plt.cm.Spectral(node.power/5.0))
-            
-        plt.bar(x,y,color=color,width = 2)
-        plt.xlabel('Node')
-        plt.ylabel('Energy Consumed(%)')
-        plt.grid(True)
-        plt.show()
-        
-
-    def scatterPlot(self):
-        import matplotlib.patches as mpatches
-        from matplotlib.collections import PatchCollection
-        import numpy as np
-        x=[]
-        y=[]
-        c=[]
-        s=[]
-        for node in self.nodes.values():
-            x.append(node.position[0])
-            y.append(node.position[1])
-            c.append(node.power/5.0)
-            s.append(3.14*25**2) # mult 8.1
-            plt.text(x[-1], y[-1],node.name,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
-        # plt.rcParams["figure.figsize"] = [15,15]
-        plt.scatter(x, y, s=s, c=c, alpha=0.6)
-        # self.neighbourConnectionPlot()
-        # plt.gca().set_aspect("equal")
-        plt.grid(True)
-        plt.show()
+    def network(self):
+        parent = self.controller.frame2
+        no = simpledialog.askinteger("Node", "Enter the no of node.", parent=parent,initialvalue=20,minvalue=2, maxvalue=500)
+        if no:parent.insert(no)
 
 
-    def bandPlot(self):
-        x=[]
-        y=[]
-        color=[]
-        s=[]
-        for node in self.nodes.values():
-            x.append(node.name)
-            y.append(node.power)
-            s.append(3.14*node.range**2)
-            if node.power < 5.0*0.99: # 10% of initial energy
-                color.append('red')
+    def season(self):
+        parent = self.controller.frame2
+        listbox = parent.listbox
+        inds = listbox.curselection()
+        if inds:
+            no = simpledialog.askinteger("Season", "Enter the no of season.", parent=parent,initialvalue=1,minvalue=0, maxvalue=100)
+            for ind in inds:
+                for _ in range(no):
+                    self.controller.networks[ind].startSeason(1,int(listbox.get(ind)[9:-1]))
+        else:
+            messagebox.showwarning("Warning","Please select a network from list")
+
+
+class ListView(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self, parent)
+        self.controller = controller
+        self.listbox = Listbox(self,selectbackground="green",selectmode='extended')
+        self.listbox.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True,padx=10,pady=10)
+    def insert(self,value):
+        self.controller.networks.append(Network(value))
+        self.listbox.insert(self.listbox.size(),"Network (%s)"%value)
+
+
+class GraphView(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self, parent)
+        self.controller = controller
+        self.fig = Figure(figsize=(5,5), dpi=100)
+
+        self.canvas = FigureCanvasTkAgg(self.fig, self)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH,expand=True,padx=10,pady=10)
+
+        toolbar = NavigationToolbar2Tk(self.canvas, self)
+        toolbar.update()
+        self.canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def draw(self,plotFuncName):
+        self.fig.clear()
+        plt = self.fig.add_subplot(111)
+        parent = self.controller.frame2
+        listbox = parent.listbox
+        ind = listbox.curselection()
+        if ind:
+            if len(ind)==1:
+                getattr(self.controller.networks[ind[0]],plotFuncName)(plt)
+                self.canvas.draw()
             else:
-                color.append('green')
-            plt.text(x[-1], y[-1],node.name,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
+                messagebox.showwarning("Warning","Please select one item")
+        else:
+            messagebox.showwarning("Warning","Please select a network from list")
 
-        plt.axhline(y=5.0*0.99)
-        plt.scatter(x, y, s=s, color=color,edgecolors='black',alpha=0.6)
-        plt.xticks(x,x)
-        plt.xlabel('Node no')
-        plt.ylabel('Energy Remain(%)')
-        plt.gcf().canvas.set_window_title('Heterogenious Calculation')
-        plt.grid(True)
-        plt.show()
-
-
-if __name__ == "__main__":
-    x = []
-    y = []
-    nets = []
-    for no in range(20,201,20):
-        net = Network(no)
-        for _ in range(30):
-            net.startSeason(1,no)
-        nets.append(net)
-        y.append(net.avgPowConsumedPerSeason)
-        x.append(no)
-    plt.plot(x,y)
-    plt.xlabel('Nodes')
-    plt.ylabel('Energy Consumed(%)')
-    plt.gcf().canvas.set_window_title('Heterogenious Calculation')
-    plt.title("Energy Consumed vs Nodes", fontsize='large')
-    plt.xticks(x,x)
-    plt.grid(True)
-    plt.show()
-    nets[0].scatterPlot()
-    nets[0].bandPlot()
-    nets[0].neighboursStatusStackPlot()
-    for net in nets:
-        net.lorentzCurve()
+app = Heterogeneity()
+app.mainloop()
