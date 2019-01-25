@@ -268,7 +268,7 @@ class Network:
                 _y = [self.nodes[node].position[1],self.nodes[i+1].position[1]]
                 plt.plot(_x, _y, '-o')
                 plt.text(x[-1], y[-1],self.nodes[i+1].name,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
-        plt.scatter(x, y, s=s, c=c, alpha=0.6,picker=True)
+        plt.scatter(x, y, s=s, c=c, alpha=0.6)
         plt.grid(True)
 
     def bandPlot(self,plt):
