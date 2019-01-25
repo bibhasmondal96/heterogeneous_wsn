@@ -148,7 +148,7 @@ class Network:
                 green.append(0)
             if r:
                 red.append(len(r)*100/len(r+g))
-                plt.text(i,green[-1]+5,len(r),horizontalalignment='center',verticalalignment='center')
+                plt.text(i,97,len(r),horizontalalignment='center',verticalalignment='center')
             else:
                 red.append(0)
         plt.bar(range(len(self.nodes)),green,width = 0.75,color='g',label='Moderate Power')
@@ -199,7 +199,7 @@ class Network:
                 if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
                     x = [self.nodes[i+1].position[0],self.nodes[j+1].position[0]]
                     y = [self.nodes[i+1].position[1],self.nodes[j+1].position[1]]
-                    plt.plot(x, y, '-o', color=plt.cm.prism(i))
+                    plt.plot(x, y, '-o')
 
 
     def lorentzCurve(self,plt):
@@ -237,23 +237,6 @@ class Network:
         plt.grid(True)
         plt.legend()
 
-
-    def barPlot(self,plt):
-        x=[]
-        y=[]
-        color=[]
-        for node in self.nodes.values():
-            x.append(node.name)
-            y.append(round((5-node.power)*100/5.0))
-            color.append(plt.cm.Spectral(node.power/5.0))
-            
-        plt.bar(x,y,color=color,width = 2)
-        plt.set_xlabel('Node')
-        plt.set_ylabel('Energy Consumed(%)')
-        plt.grid(True)
-        
-
-
     def scatterPlot(self,plt):
         x=[]
         y=[]
@@ -265,13 +248,28 @@ class Network:
             c.append(node.power/5.0)
             s.append(3.14*25**2) # mult 8.1
             plt.text(x[-1], y[-1],node.name,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
-        # plt.rcParams["figure.figsize"] = [15,15]
-        plt.scatter(x, y, s=s, c=c, alpha=0.6)
+        plt.scatter(x, y, s=s, c=c, alpha=0.6,picker=True)
         # self.neighbourConnectionPlot()
-        # plt.gca().set_aspect("equal")
         plt.grid(True)
-        
 
+    def neighbourPlot(self,plt,node):
+        x=[self.nodes[node].position[0]]
+        y=[self.nodes[node].position[1]]
+        c=[self.nodes[node].power/5.0]
+        s=[3.14*25**2]
+        plt.text(x[-1], y[-1],self.nodes[node].name,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
+        for i in range(len(self.nodes)):
+            if self.distance(node,i+1)<=self.nodes[node].range and i+1!=node:
+                x.append(self.nodes[i+1].position[0])
+                y.append(self.nodes[i+1].position[1])
+                c.append(self.nodes[i+1].power/5.0)
+                s.append(3.14*25**2) # mult 8.1
+                _x = [self.nodes[node].position[0],self.nodes[i+1].position[0]]
+                _y = [self.nodes[node].position[1],self.nodes[i+1].position[1]]
+                plt.plot(_x, _y, '-o')
+                plt.text(x[-1], y[-1],self.nodes[i+1].name,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
+        plt.scatter(x, y, s=s, c=c, alpha=0.6,picker=True)
+        plt.grid(True)
 
     def bandPlot(self,plt):
         x=[]

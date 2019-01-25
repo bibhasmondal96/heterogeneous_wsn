@@ -9,6 +9,8 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import simpledialog,messagebox,Listbox
 
+from PIL import ImageGrab
+
 from network import Network
 
 class Heterogeneity(tk.Tk):
@@ -61,6 +63,13 @@ class ControlView(tk.Frame):
 
         button7 = ttk.Button(self, text="Reset", command=self.reset)
         button7.pack(pady=10,padx=10)
+
+        button8 = ttk.Button(self, text="Screenshots", command=self.screenshot)
+        button8.pack(pady=10,padx=10)
+
+    def screenshot(self):
+        img = ImageGrab.grab()
+        img.show()
 
     def reset(self):
         self.controller.progress['value'] = 0
@@ -153,7 +162,9 @@ class GraphView(tk.Frame):
         toolbar.update()
         self.canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-    def draw(self,plotFuncName):
+        self.fig.canvas.mpl_connect('pick_event', self.onPick)
+
+    def draw(self,plotFuncName,**kwargs):
         self.controller.progress['value'] = 0
         self.fig.clear()
         plt = self.fig.add_subplot(111)
@@ -162,13 +173,16 @@ class GraphView(tk.Frame):
         ind = listbox.curselection()
         if ind:
             if len(ind)==1:
-                getattr(self.controller.networks[ind[0]],plotFuncName)(plt)
+                getattr(self.controller.networks[ind[0]],plotFuncName)(plt,**kwargs)
                 self.canvas.draw()
             else:
                 messagebox.showwarning("Warning","Please select one item")
         else:
             messagebox.showwarning("Warning","Please select a network from list")
         self.controller.progress['value'] = 100
+
+    def onPick(self,event):
+        self.draw("neighbourPlot",node = event.ind[0]+1)
 
 app = Heterogeneity()
 app.mainloop()
