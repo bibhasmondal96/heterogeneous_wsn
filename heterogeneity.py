@@ -132,7 +132,7 @@ class ControlView(tk.Frame):
                     for j in range(no):
                         self.controller.networks[inds[i]].startSeason(1,int(listbox.get(inds[i])[9:-1]))
                         self.controller.progress['value'] = (i*no+j+1)*100/(no*len(inds))
-            threading.Thread(target=job,args=()).start()
+            if no:threading.Thread(target=job,args=()).start()
         else:
             messagebox.showwarning("Warning","Please select a network from list")
 
