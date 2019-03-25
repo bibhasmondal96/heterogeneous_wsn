@@ -137,7 +137,7 @@ class Network:
             g = []
             for j in range(len(self.nodes)):
                 if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
-                    if self.nodes[j+1].power < 5*0.99:
+                    if self.nodes[j+1].power < 5*0.1: #10% of initial Energy
                         r.append(self.nodes[j+1].name)
                     else:
                         g.append(self.nodes[j+1].name)
@@ -169,7 +169,7 @@ class Network:
             g = []
             for j in range(len(self.nodes)):
                 if self.distance(i+1,j+1)<=self.nodes[i+1].range and i!=j:
-                    if self.nodes[j+1].power < 5*0.99:
+                    if self.nodes[j+1].power < 5*0.1: #10% of initial Energy
                         r.append(self.nodes[j+1].name)
                     else:
                         g.append(self.nodes[j+1].name)
