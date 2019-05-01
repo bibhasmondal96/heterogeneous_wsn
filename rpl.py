@@ -4,6 +4,7 @@ import socket
 import random
 import threading
 import matplotlib.pyplot as plt
+
 class RPL(threading.Thread):
     
     transfer_loss = {"send":0.005,"receive":0.002}
@@ -11,17 +12,22 @@ class RPL(threading.Thread):
     metric = {'dist':-1,'rank': -0.50,'power':0.50}
     ATTEMPT_TIME = 1
     MAX_ATTEMPT = 10
+    INF = 999
 
     def __init__(self,addr,coor):
         super(RPL,self).__init__()
         self.addr = addr
         self.coor = coor #[x,y]
         self.node_id = "%s:%s"%addr
+        self.dis_id = 0
         self.power = 5
         self.rank = None
         self.dist = None
         self.sent_bytes = 0
         self.received_bytes = 0
+        self.dis_id_list = {}
+        self.sent_dis = {}
+        self.recv_dio = {}
         self.parents = {}
         self.childs = {}
         self.best_parent = {} #{'node_id':node_id,'score':score}
@@ -56,7 +62,7 @@ class RPL(threading.Thread):
             while True:
                 message = f.readline()
                 if message:
-                    if message[:3] != 'DIO':
+                    if message[:4] == 'USER':
                         if len(message)<=self.max_byte('receive'):
                             print('Received %s bytes'%len(message))
                             # Update params
@@ -72,12 +78,13 @@ class RPL(threading.Thread):
     def on_recv(self,message):
         message = message.split('|')
         # Process message
-        switch = {'DIO':self.process_dio,
-                  'MSG': self.process_msg}
+        switch = {'DIS':self.process_dis,
+                  'DIO':self.process_dio,
+                  'USER': self.process_msg}
         switch[message[0]](message)
         
     def send(self,sock,message):
-        if message[:3] == 'DIO':
+        if message[:4] != 'USER':
             # send message
             sock.send(message.encode())
         else:
@@ -95,22 +102,63 @@ class RPL(threading.Thread):
         dx = float(coor[0])-self.coor[0]
         dy = float(coor[1])-self.coor[1]
         return math.sqrt(dx**2+dy**2)
+
+    def send_dis(self,dest):
+        self.dis_id += 1
+        message = 'DIS|%s|%s|%s|\r\n'%(self.dis_id,self.node_id,dest)
+        self.sent_dis[dest] = set()
+        self.recv_dio[dest] = set()
+        for parent in self.parents:
+            self.send(self.parents[parent],message)
+            self.sent_dis[dest].add(parent)
     
-    def send_dio(self,rank=0,dist=0):
+    def process_dis(self,message):
+        dis_id = message[1]
+        orig = message[2]
+        dest = message[3]
+        if self.node_id == orig:
+            return
+        if orig in self.dis_id_list:
+            # Discard duplicate dis mesage
+            if self.dis_id_list[orig] == dis_id:
+                return
+        # Buffer dis id
+        self.dis_id_list[orig] = dis_id
+
+        if self.node_id == dest:
+            # send dio
+            self.send_dio()
+        elif self.parents:
+            self.forward_dis(message)
+        else:
+            # send dio with infinite distance and rank from sink
+            self.send_dio(self.INF,self.INF)
+    
+    def forward_dis(self,message):
+        message = '|'.join(message)
+        for parent in self.parents:
+            self.send(self.parents[parent],message)
+    
+    def send_dio(self,orig=None,rank=0,dist=0):
         self.rank = rank # rank from sink
         self.dist = dist # distance from sink
-        message = 'DIO|%s|%s,%s|%s|%s|%s|\r\n'%(self.node_id,*self.coor,self.rank,self.dist,self.power)
+        orig = orig or self.node_id
+        message = 'DIO|%s|%s|%s,%s|%s|%s|%s|\r\n'%(orig,self.node_id,*self.coor,self.rank,self.dist,self.power)
         for node in self.childs:
             self.send(self.childs[node],message)
     
     def process_dio(self,message):
         # return if current node is sink
         if self.rank==0:return
-        sender = message[1]
-        coor = message[2].split(',')
-        rank = int(message[3])+1
-        dist = float(message[4])+self.distance(coor)
-        power = float(message[5])
+        orig = message[1]
+        sender = message[2]
+        coor = message[3].split(',')
+        rank = int(message[4])+1
+        dist = float(message[5])+self.distance(coor)
+        power = float(message[6])
+
+        if orig in self.recv_dio:
+            self.recv_dio[orig].add(sender)
 
         score = self.obj_func({'dist':dist,'power':power,'rank':rank})
 
@@ -124,7 +172,7 @@ class RPL(threading.Thread):
         else:
             return
         # Send DIO if best parent updated
-        self.send_dio(rank,dist)
+        self.send_dio(orig,rank,dist)
     
     def obj_func(self,dictionary):
         score = 0
@@ -137,20 +185,22 @@ class RPL(threading.Thread):
             
     
     def send_msg(self,dest,msg_data):
-        message = 'MSG|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
-        if self.best_parent:
-            best_parent = self.best_parent['node_id']
-            self.send(self.parents[best_parent],message)
-        else:
-            self.pending_msg_q[dest] = {'orig':self.node_id,'msg_data':msg_data}
-        
-        # Try to send pending msg if available
+        message = 'USER|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
+        self.send_dis(dest)
         for _ in range(self.MAX_ATTEMPT):
-            if self.pending_msg_q:
-                self.send_pending_msgs()
-                time.sleep(self.ATTEMPT_TIME)
+            if len(self.sent_dis[dest]) == len(self.recv_dio[dest]):
+                if self.best_parent:
+                    best_parent = self.best_parent['node_id']
+                    self.send(self.parents[best_parent],message)
+                    # send pending msg if available
+                    if self.pending_msg_q:
+                        self.send_pending_msgs()
+                    return
+                else:
+                    break
             else:
-                break
+                time.sleep(self.ATTEMPT_TIME)
+        self.pending_msg_q[dest] = {'orig':self.node_id,'msg_data':msg_data}
     
     def send_pending_msgs(self):
         if self.best_parent:
@@ -158,7 +208,7 @@ class RPL(threading.Thread):
                 msg = self.pending_msg_q.pop(dest)
                 orig = msg['orig']
                 msg_data = msg['msg_data']
-                message = 'MSG|%s|%s|%s|\r\n'%(orig,dest,msg_data)
+                message = 'USER|%s|%s|%s|\r\n'%(orig,dest,msg_data)
                 best_parent = self.best_parent['node_id']
                 self.send(self.parents[best_parent],message)
     
@@ -193,10 +243,12 @@ class RPL(threading.Thread):
             except:
                 print('Connection closed\n')
                 break
+
 class Node(RPL):
     def __init__(self,addr,dist_range=[1,50]):
         coor = [random.randint(*dist_range), random.randint(*dist_range)]
         super(Node,self).__init__(addr,coor)
+
 class Network:
     def __init__(self,no_of_node,ip='127.0.0.1',start_port=8000):
         self.no_of_node = no_of_node
@@ -210,12 +262,13 @@ class Network:
 
     def init_neighbour(self):
         for node in self.nodes:
+            self.nodes[node].best_parent = {}
             self.nodes[node].parents = {}
             self.nodes[node].childs = {}
         for node1 in self.nodes:
             for node2 in self.nodes:
                 if self.nodes[node1].distance(self.nodes[node2].coor) <= self.nodes[node1].power**2 and node1 != node2:
-                    self.nodes[node1].connect(self.nodes[node2].addr)
+                    self.nodes[node2].connect(self.nodes[node1].addr)
                     
     def shutdown(self):
         for node in self.nodes.values():
@@ -225,7 +278,7 @@ class Network:
                 
     def reset(self,factor):
         for node in self.nodes:
-            self.nodes[node].metric = {'dist':-1,'rank': -1+factor,'power':factor}
+            self.nodes[node].metric = {'dist':-1,'rank': -1*factor,'power':factor}
             self.nodes[node].power = 5
             self.nodes[node].rank = None
             self.nodes[node].dist = None
@@ -282,11 +335,12 @@ class Network:
     def start_season(self,dest):
         for node in self.nodes:
             if node != dest:
-                self.nodes[dest].send_dio()
-                self.nodes[node].send_msg(dest,'PING')
-                time.sleep(0.5)
                 self.init_neighbour()
-network.shutdown()
+                self.nodes[node].send_msg(dest,'PING')
+                time.sleep(0.2)
+
+try:network.shutdown()
+except:pass
 network = Network(10)
 network.plot_network()
 network.plot_neighbour_connection()
@@ -295,3 +349,4 @@ network.plot_network()
 network.plot_best_parent_connection()
 network.plot_transfer_stat('127.0.0.1:8009')
 network.nodes['127.0.0.1:8009'].msg_box
+network.plot_transfer_stat('127.0.0.1:8009')

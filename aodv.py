@@ -1,242 +1,379 @@
+import time
+import math
 import socket
+import random
 import logging
 import threading
-AODV_PATH_DISCOVERY_TIME = 30
-AODV_ACTIVE_ROUTE_TIMEOUT = 30
+import matplotlib.pyplot as plt
+
 class AODV(threading.Thread):
-    seq_no = 0
-    rreq_id = 0
-    node_id = None
-    sock = None
-    neighbours = {}
-    status = "Active"
-    rreq_id_list = {}
-    routing_table = {}
-
-    def __init__(self,node_id):
-        self.node_id = node_id
-
-    def create_server_and_listen(self):
+    INF = 999
+    transfer_loss = {"send":0.005,"receive":0.002}
+    transfer_threshold = {"send": 1.5, "receive": 0.5}
+    metric = {'dist':-1,'hop': -0.50,'power':0.50}
+    BEST_PATH_WAIT_TIME = 1
+    ATTEMPT_TIME = 1
+    MAX_ATTEMPT = 10
+    
+    def __init__(self,addr,coor):
+        super(AODV,self).__init__()
+        self.addr = addr
+        self.coor = coor #[x,y]
+        self.node_id = "%s:%s"%addr
+        self.rreq_id = 0
+        self.power = 5
+        self.sent_bytes = 0
+        self.received_bytes = 0
+        self.parents = {}
+        self.childs = {}
+        self.routing_table = {}
+        self.rreq_id_list = {}
+        self.msg_box = {}
+        self.pending_msg_q = {}
         self.sock = socket.socket()
-        self.sock.bind(('0',0))
+        self.sock.bind(addr)
         self.sock.listen(5)
-        while True:
-            conn , _ = self.sock.accept()
-            node_id = conn.recv(1024)
-            self.neighbours[node_id] = conn
-
-    def neighbour_of(self,nodes):
+        
+    def connect(self,nodes):
         if not isinstance(nodes,list):
             nodes = [nodes]
         for node in nodes:
             s = socket.socket()
             s.connect(node)
+            s.send(self.node_id.encode())
+            self.parents['%s:%s'%node] = s
+            threading.Thread(target=self.listener,args=(s,)).start()
+            
+    def max_byte(self,operation):
+        avail_pow = self.power-self.transfer_threshold[operation]
+        byte = avail_pow/self.transfer_loss[operation]
+        return int(byte)
+    
+    def power_loss(self,message,op):
+        loss = len(message)*self.transfer_loss[op]
+        return loss
 
-    def send_rreq(self,dest,dest_seq_no=-1):
-        '''Broadcast an RREQ message for the given destination'''
-        # Increment our sequence number
-        self.seq_no = self.seq_no + 1
-        # Increment the RREQ_ID
-        self.rreq_id = self.rreq_id + 1
-        # Construct the RREQ packet
-        message_type = "RREQ_MESSAGE"
-        sender = self.node_id
-        hop_count = 0
+    def listener(self,sock):
+        with sock:
+            f = sock.makefile(mode='r')
+            while True:
+                message = f.readline()
+                if message:
+                    if message[:4] == 'USER':
+                        if len(message)<=self.max_byte('receive'):
+                            print('Received %s bytes'%len(message))
+                            # Update params
+                            self.received_bytes += len(message)
+                            self.power -= self.power_loss(message,'receive')
+                            self.on_recv(message)
+                        else:
+                            print('Low power')
+                    else:
+                        self.on_recv(message)
+                        
+    
+    def on_recv(self,message):
+        message = message.split('|')
+        # Process message
+        switch = {'RREQ':self.process_rreq,
+                  'RREP':self.process_rrep,
+                  'USER': self.process_user_message}
+        switch[message[0]](message)
+        
+    def send(self,sock,message):
+        if message[:4] != 'USER':
+            # send message
+            sock.send(message.encode())
+        else:
+            if len(message)<=self.max_byte('send'):
+                # send message
+                sock.send(message.encode())
+                # Update params
+                self.sent_bytes += len(message)
+                self.power -= self.power_loss(message,'send')
+                print('Sent %s bytes'%len(message))
+            else:
+                print('Low power',self.power)
+        
+    def distance(self,coor):
+        dx = float(coor[0])-self.coor[0]
+        dy = float(coor[1])-self.coor[1]
+        return math.sqrt(dx**2+dy**2)
+    
+    def obj_func(self,dictionary):
+        score = 0
+        for key in dictionary:
+            if key in self.metric:
+                score += dictionary[key]*self.metric[key]
+            else:
+                score += dictionary[key]
+        return score
+    
+    def send_rreq(self,dest):
+        self.rreq_id += 1
         rreq_id = self.rreq_id
         orig = self.node_id
-        orig_seq_no = self.seq_no
-        message = message_type + ":" + sender + ":" + str(hop_count) + ":" + str(rreq_id) + ":" + str(dest) + ":" + str(dest_seq_no) + ":" + str(orig) + ":" + str(orig_seq_no)
-        
-        # Broadcast the RREQ packet to all the neighbors
-        for conn in self.neighbours:
-            conn.send(message)
-            logging.debug("['" + message_type + "', 'Broadcasting RREQ to " + dest + "']")
-
-    def restart_route_timer(self, route, create):
-        '''Create / Restart the lifetime timer for the given route'''
-        if (create == False):
-            timer = route['Lifetime']
-            timer.cancel()
-        timer = threading.Timer(AODV_ACTIVE_ROUTE_TIMEOUT, self.route_timeout, [route])
-        route['Lifetime'] = timer
-        route['Status'] = 'Active'
-        timer.start()
-
-    def route_timeout(self, route):
-        '''Handle route timeouts'''
-        # Remove the route from the routing table
-        key = route['Destination']
-        self.routing_table.pop(key)
-        # If the destination is a neighbor, remove it from the neighbor table as well
-        if key in self.neighbours:
-            self.neighbours.pop(key)
-        logging.debug("aodv_process_route_timeout: removing " + key + " from the routing table.")
-
-    def path_discovery_timeout(self, node, rreq_id):
-        '''Handle Path Discovery timeouts'''
-        # Remove the buffered RREQ_ID for the given node
-        if node in self.rreq_id_list:
-            if rreq_id is self.rreq_id_list[node]:
-                self.rreq_id_list.pop(node)
-
+        sender = self.node_id
+        power = self.INF
+        coor = self.coor
+        dist = 0
+        hop = 0        
+        message = 'RREQ|%s|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(rreq_id,orig,sender,dest,*self.coor,hop,dist,power)
+        for child in self.childs:
+            self.send(self.childs[child],message)
+    
     def process_rreq(self,message):
         '''Process an incoming RREQ message'''
-        # Ignore the message if we are not active
-        if (self.status == "Inactive"):
-            return
         # Extract the relevant parameters from the message
-        message_type = message[0]
-        sender = message[1]
-        hop_count = int(message[2]) + 1
-        message[2] = str(hop_count)
-        rreq_id = int(message[3])
+        rreq_id = int(message[1])
+        orig = message[2]
+        sender = message[3]
         dest = message[4]
-        # dest_seq_no = int(message[5])
-        orig = message[6]
-        orig_seq_no = int(message[7])
-        logging.debug("['" + message_type + "', 'Received RREQ to " + dest + " from " + sender + "']")
-        # Discard this RREQ if we have already received this before
-        if orig in self.rreq_id_list:
-            if rreq_id == self.rreq_id_list[orig]:
-                logging.debug("['RREQ_MESSAGE', 'Ignoring duplicate RREQ (" + orig + ", " + str(rreq_id) + ") from " + sender + "']")
-                return
-        # This is a new RREQ message. Buffer it first
-        self.rreq_id_list[orig] = rreq_id
-        
-        path_discovery_timer = threading.Timer(AODV_PATH_DISCOVERY_TIME,self.path_discovery_timeout, [orig, rreq_id])
-        path_discovery_timer.start()
-        '''
-        Check if we have a route to the source. If we have, see if we need
-        to update it. Specifically, update it only if:
-        
-        1. The destination sequence number for the route is less than the
-        originator sequence number in the packet
-        2. The sequence numbers are equal, but the hop_count in the packet
-        + 1 is lesser than the one in routing table
-        3. The sequence number in the routing table is unknown
-        
-        If we don't have a route for the originator, add an entry
-        '''
-        if orig in self.routing_table:
-            route = self.routing_table[orig]
-            if (int(route['Seq-No']) < orig_seq_no):
-                route['Seq-No'] = orig_seq_no
-                self.restart_route_timer(route, False)
-            elif (int(route['Seq-No']) == orig_seq_no):
-                if (int(route['Hop-Count']) > hop_count):
-                    route['Hop-Count'] = hop_count
-                    route['Next-Hop'] = sender
-                    self.restart_route_timer(route, False)
-            elif (int(route['Seq-No']) == -1):
-                route['Seq-No'] = orig_seq_no
-                self.restart_route_timer(route, False)
-        else:
-            self.routing_table[orig] = {'Destination': str(orig),
-                                        'Next-Hop': str(sender),
-                                        'Seq-No': str(orig_seq_no),
-                                        'Hop-Count': str(hop_count),
-                                        'Status': 'Active'}
-            self.restart_route_timer(self.routing_table[orig], True)
-        # Check if we are the destination. If we are, generate and send an RREP back.
-        if (self.node_id == dest):
-            self.send_rrep(orig, sender, dest, dest, 0, 0)
+        coor = message[5].split(',')
+        hop = int(message[6]) + 1
+        dist = float(message[7])+self.distance(coor)
+        power = float(message[8])
+        # Check if we are the origin. If we are, discard this RREP.
+        if (self.node_id == orig):
             return
-        # We are not the destination. Check if we have a valid route
-        # to the destination. If we have, generate and send back an
-        # RREP.
-        if dest in self.routing_table:
-            # Verify that the route is valid and has a higher seq number
-            route = self.routing_table[dest]
-            status = route['Status']
-            route_dest_seq_no = int(route['Seq-No'])
-            if (status == "Active" and route_dest_seq_no >= dest_seq_no):
-                self.send_rrep(orig, sender, self.node_id, dest, route_dest_seq_no, int(route['Hop-Count']))
-                return
+        score = self.obj_func({'dist':dist,'power':power,'hop':hop})
+        if orig not in self.routing_table:
+            self.routing_table[orig] = {
+                'Next-Hop':sender,
+                'Hop':hop,
+                'Distance': dist,
+                'Score': score
+            }
+        elif self.routing_table[orig]['Score']<score:
+            # Update routing table
+            self.routing_table[orig] = {
+                'Next-Hop':sender,
+                'Hop':hop,
+                'Distance': dist,
+                'Score': score
+            }
+            return
         else:
-            # Rebroadcast the RREQ
-            self.forward_rreq(message)
-
-
+            return
+        if orig not in self.rreq_id_list:
+            if self.node_id == dest:
+                self.rreq_id_list[orig] = rreq_id
+                timer = threading.Timer(self.BEST_PATH_WAIT_TIME,self.send_rrep,[orig,])
+            else:
+                timer = threading.Timer(self.BEST_PATH_WAIT_TIME,self.forward_rreq,[message,])
+            timer.start()
+        
     def forward_rreq(self,message):
         '''Rebroadcast an RREQ request (Called when RREQ is received by an intermediate node)'''
-        msg = message[0] + ":" + self.node_id + ":" + message[2] + ":" + message[3] + ":" + message[4] + ":" + message[5] + ":" + message[6] + ":" + message[7]
-        for conn in self.neighbours:
-            conn.send(msg)
-            logging.debug("['" + message[0] + "', 'Rebroadcasting RREQ to " + message[4] + "']")
-
-    def send_rrep(self,rrep_dest, rrep_nh, rrep_src, rrep_int_node, dest_seq_no, hop_count):
+        message[3] = self.node_id
+        message[7] = str(float(message[7])+self.distance(message[5].split(',')))
+        message[5] = '%s,%s'%tuple(self.coor)
+        message[6] = str(int(message[6])+1)
+        message[8] = str(self.power)
+        message = '|'.join(message)
+        logging.debug("['" + message[0] + "', 'Rebroadcasting RREQ to " + message[4] + "']")
+        for conn in self.childs.values():
+            self.send(conn,message)
+            
+    def send_rrep(self,dest):
         '''Send an RREP message back to the RREQ originator'''
-        # Check if we are the destination in the RREP. If not, use the parameters passed.
-        if (rrep_src == rrep_int_node):
-            # Increment the sequence number and reset the hop count
-            self.seq_no = self.seq_no + 1
-            dest_seq_no = self.seq_no
-            hop_count = 0
-        # Construct the RREP message
-        message_type = "RREP_MESSAGE"
+        orig = self.node_id
         sender = self.node_id
-        dest = rrep_int_node
-        orig = rrep_dest
-        message = message_type + ":" + sender + ":" + str(hop_count) + ":" + str(dest) + ":" + str(dest_seq_no) + ":" + str(orig)
-        # Now send the RREP to the RREQ originator along the next-hop
-        self.neighbours[rrep_nh].send(message)
-        logging.debug("['" + message_type + "', 'Sending RREP for " + rrep_int_node + " to " + rrep_dest + " via " + rrep_nh + "']")
-        pass
-
+        power = self.power
+        coor = self.coor
+        dist = 0
+        hop = 0
+        message = 'RREP|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(orig,sender,dest,*coor,hop,dist,power)
+        next_hop = self.routing_table[dest]['Next-Hop']
+        self.send(self.parents[next_hop],message)
+        
     def process_rrep(self,message):
         '''Process an incoming RREP message'''
         # Extract the relevant fields from the message
-        message_type = message[0]
-        sender = message[1]
-        hop_count = int(message[2]) + 1
-        message[2] = str(hop_count)
+        orig = message[1]
+        sender = message[2]
         dest = message[3]
-        dest_seq_no = int(message[4])
-        orig = message[5]
-        logging.debug("['" + message_type + "', 'Received RREP for " + dest + " from " + sender + "']")
-        # Check if we originated the RREQ. If so, consume the RREP.
-        if (self.node_id == orig):
-            # Update the routing table. If we have already got a route for
-            # this estination, compare the hop count and update the route
-            # if needed.
-            if (dest in self.routing_table.keys()):
-                route = self.routing_table[dest]
-                route_hop_count = int(route['Hop-Count'])
-                if (route_hop_count > hop_count):
-                    route['Hop-Count'] = str(hop_count)
-                    self.restart_route_timer(self.routing_table[dest], False)
-            else:
-                self.routing_table[dest] = {'Destination': dest,
-                                            'Next-Hop': sender,
-                                            'Seq-No': str(dest_seq_no),
-                                            'Hop-Count': str(hop_count),
-                                            'Status': 'Active'}
-                self.restart_route_timer(self.routing_table[dest], True)
-        else:
-            # We need to forward the RREP. Before forwarding, update
-            # information about the destination in our routing table.
-            if dest in self.routing_table:
-                route = self.routing_table[dest]
-                route['Status'] = 'Active'
-                route['Seq-No'] = str(dest_seq_no)
-                self.restart_route_timer(route, False)
-            else:
-                self.routing_table[dest] = {'Destination': dest,
-                                            'Next-Hop': sender,
-                                            'Seq-No': str(dest_seq_no),
-                                            'Hop-Count': str(hop_count),
-                                            'Status': 'Active'}
-                self.restart_route_timer(self.routing_table[dest], True)
-            # Now lookup the next-hop for the source and forward it
-            route = self.routing_table[orig]
-            next_hop = route['Next-Hop']
-            self.forward_rrep(message, next_hop)
+        coor = message[4].split(',')
+        hop = int(message[5]) + 1
+        dist = float(message[6])+self.distance(coor)
+        power = float(message[7])
+        score = self.obj_func({'dist':dist,'power':power,'hop':hop})
+        self.routing_table[orig] = {
+            'Next-Hop':sender,
+            'Hop':hop,
+            'Distance': dist,
+            'Score': score
+        }
+        if self.node_id != dest:
+            self.forward_rrep(message)
+            
+    def forward_rrep(self,message):
+        dest = message[3]
+        message[2] = self.node_id
+        message[6] = str(float(message[6])+self.distance(message[4].split(',')))
+        message[4] = '%s,%s'%tuple(self.coor)
+        message[5] = str(int(message[5])+1)
+        message[7] = str(self.power)
+        message = '|'.join(message)
+        next_hop = self.routing_table[dest]['Next-Hop']
+        self.send(self.parents[next_hop],message)
         
-    def forward_rrep(self,message,next_hop):
-        '''Forward an RREP message (Called when RREP is received by an intermediate node)'''
-        msg = message[0] + ":" + self.node_id + ":" + message[2] + ":" + message[3] + ":" + message[4] + ":" + message[5]
-        next_hop.send(msg)
-        logging.debug("['" + message[0] + "', 'Forwarding RREP for " + message[5] + " to " + next_hop + "']")
-
+    def send_user_message(self,dest,msg_data):
+        message = 'USER|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
+        self.send_rreq(dest)
+        for _ in range(self.MAX_ATTEMPT):
+            if dest in self.routing_table:
+                next_hop = self.routing_table[dest]['Next-Hop']
+                self.send(self.childs[next_hop],message)
+                # send pending msg if available
+                if self.pending_msg_q:
+                    self.send_pending_msgs()
+                return
+            else:
+                time.sleep(self.ATTEMPT_TIME)
+        self.pending_msg_q[dest] = {'orig':self.node_id,'msg_data':msg_data}
+    
+    def process_user_message(self,message):
+        orig = message[1]
+        dest = message[2]
+        msg_data = message[3]
+        if self.node_id == dest:
+            self.msg_box[orig] = msg_data
+            print('New message arrived')
+        else:
+            self.forward_user_message(message)
+            
+    def forward_user_message(self,message):
+        orig = message[1]
+        dest = message[2]
+        msg_data = message[3]
+        message = '|'.join(message)
+        for child in self.childs:
+            self.send(self.childs[child],message)
+            
     def run(self):
-        pass
+        while True:
+            try:
+                conn , _ = self.sock.accept()
+                self.childs[conn.recv(21).decode()] = conn
+                threading.Thread(target=self.listener,args=(conn,)).start()
+            except:
+                print('Connection closed\n')
+                break
+                
+class Node(AODV):
+    def __init__(self,addr,dist_range=[1,50]):
+        coor = [random.randint(*dist_range), random.randint(*dist_range)]
+        super(Node,self).__init__(addr,coor)
+        
+class Network:
+    MAX_ATTEMPT = 10
+    ATTEMPT_TIME = 1
+    def __init__(self,no_of_node,ip='127.0.0.1',start_port=8000):
+        self.no_of_node = no_of_node
+        self.nodes = {}
+        for i in range(no_of_node):
+            addr = (ip,start_port+i)
+            self.nodes['%s:%s'%addr] = Node(addr)
+            self.nodes['%s:%s'%addr].start()
+        # Initilize neighbour
+        self.init_neighbour()
+
+    def init_neighbour(self):
+        for node in self.nodes:
+            self.nodes[node].routing_table = {}
+            self.nodes[node].parents = {}
+            self.nodes[node].childs = {}
+        for node1 in self.nodes:
+            for node2 in self.nodes:
+                if self.nodes[node1].distance(self.nodes[node2].coor) <= self.nodes[node1].power**2 and node1 != node2:
+                    self.nodes[node2].connect(self.nodes[node1].addr)
+                    
+    def shutdown(self):
+        for node in self.nodes.values():
+            node.sock.close()
+            for parent in node.parents.values():
+                parent.close()
+                
+    def reset(self,factor):
+        for node in self.nodes:
+            self.nodes[node].metric = {'dist':-1,'hop': -1*factor,'power':factor}
+            self.nodes[node].rreq_id = 0
+            self.nodes[node].power = 5
+            self.nodes[node].sent_bytes = 0
+            self.nodes[node].received_bytes = 0
+            self.nodes[node].routing_table = {}
+            self.nodes[node].rreq_id_list = {}
+            self.nodes[node].msg_box = {}
+            self.nodes[node].pending_msg_q = {}
+                    
+    def plot_transfer_stat(self,dest):
+        transfer = []
+        power = []
+        for i in [0.0,0.2,0.4,0.6,0.8,1.0]:
+            total = 0
+            self.reset(i)               
+            self.start_season(dest)
+            for name,node in self.nodes.items():
+                total += node.received_bytes+node.sent_bytes
+            transfer.append(total/self.no_of_node)
+            power.append(i)
+        plt.plot(power,transfer)
+        plt.show()
+        
+    def plt_dest_connection(self,dest):
+        for node in self.nodes.values():
+            if node.node_id != dest:
+                node.send_rreq(dest)
+                for _ in range(self.MAX_ATTEMPT):
+                    if dest in node.routing_table:
+                        route = node.routing_table[dest]
+                        x = [self.nodes[route['Next-Hop']].coor[0],node.coor[0]]
+                        y = [self.nodes[route['Next-Hop']].coor[1],node.coor[1]]
+                        plt.plot(x, y, '-o')
+                        break
+                    time.sleep(self.ATTEMPT_TIME)
+                
+                    
+    def plot_neighbour_connection(self):
+        for node in self.nodes:
+            for child in self.nodes[node].childs:
+                x = [self.nodes[node].coor[0],self.nodes[child].coor[0]]
+                y = [self.nodes[node].coor[1],self.nodes[child].coor[1]]
+                plt.plot(x, y, '-o')
+                    
+    def plot_network(self):
+        x=[]
+        y=[]
+        c=[]
+        s=[]
+        plt.figure(figsize=(30,15),dpi=200)
+        for node in self.nodes.values():
+            x.append(node.coor[0])
+            y.append(node.coor[1])
+            c.append(node.power)
+            s.append(3.14*25**2) # mult 8.1
+            plt.text(x[-1], y[-1],node.node_id,size=20,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
+        plt.scatter(x, y, s=s, c=c, alpha=0.6,picker=True)
+        plt.grid(True)
+
+    def start_season(self,dest):
+        for node in self.nodes:
+            if node != dest:
+                self.init_neighbour()
+                self.nodes[node].send_user_message(dest,'PING')
+                time.sleep(0.5)
+                
+try:network.shutdown()
+except:pass
+network = Network(10)
+network.plot_network()
+network.plot_neighbour_connection()
+network.plot_network()
+network.plt_dest_connection('127.0.0.1:8009')
+network.plot_transfer_stat('127.0.0.1:8009')
+network.nodes['127.0.0.1:8009'].msg_box
+network.plot_transfer_stat('127.0.0.1:8009')
+                
+                
+              
