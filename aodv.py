@@ -25,7 +25,7 @@ class AODV(threading.Thread):
         self.parents = {}
         self.childs = {}
         self.routing_table = {}
-        self.rreq_id_list = {}
+        self.timers = {} #{'rreq_id':rreq_id,'timer':timer}
         self.msg_box = {}
         self.pending_msg_q = {}
         self.sock = socket.socket()
@@ -140,12 +140,9 @@ class AODV(threading.Thread):
         # Check if we are the origin. If we are, discard this RREP.
         if (self.node_id == orig):
             return
-        # Discard duplicate rreq
-        if orig in self.rreq_id_list:
-            if self.rreq_id_list[orig] == rreq_id:
-                return
-
+        # Calculate score
         score = self.obj_func({'dist':dist,'power':power,'hop':hop})
+        # Insert or update routing table if needed
         if orig not in self.routing_table:
             self.routing_table[orig] = {
                 'Next-Hop':sender,
@@ -163,33 +160,34 @@ class AODV(threading.Thread):
                 'Power': power,
                 'Score': score
             }
-            return
         else:
             return
-        if orig not in self.rreq_id_list:
-            if self.node_id == dest:                
-                timer = threading.Timer(self.BEST_PATH_WAIT_TIME,self.send_rrep,[orig,])
-            else:
-                timer = threading.Timer(self.BEST_PATH_WAIT_TIME,self.forward_rreq,[message,])
-            timer.start()
+        if self.node_id == dest:
+            # Restart timer on getiing rreq
+            if orig in self.timers:
+                timer = self.timers[orig]
+                if timer['rreq_id'] == rreq_id:
+                    # Cancel previous time
+                    timer['timer'].cancel()
+            # Add timer
+            self.timers[orig] = {}
+            self.timers[orig]['rreq_id'] = rreq_id
+            self.timers[orig]['timer'] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.send_rrep,[orig,])
+            self.timers[orig]['timer'].start()
+        else:
+            self.forward_rreq(message)
 
     def forward_rreq(self,message):
         '''Rebroadcast an RREQ request (Called when RREQ is received by an intermediate node)'''
-        rreq_id = message[1]
-        orig = message[2]
-        # Buffer rreq_id to discard rreq after sending rrep for forwarding rreq
-        self.rreq_id_list[orig] = rreq_id
-        # Check the routing table is deleted or not
-        if orig in self.routing_table:
-            route = self.routing_table[orig]
-            message[3] = self.node_id
-            message[7] = str(route['Distance'])
-            message[5] = '%s,%s'%tuple(self.coor)
-            message[6] = str(route['Hop'])
-            message[8] = str(route['Power'])
-            message = '|'.join(message)
-            for conn in self.childs.values():
-                self.send(conn,message)
+        coor = message[5].split(',')
+        message[3] = self.node_id
+        message[5] = '%s,%s'%tuple(self.coor)
+        message[6] = str(int(message[6]) + 1)
+        message[7] = str(float(message[7])+self.distance(coor))
+        message[8] = str(min(float(message[8]),self.power))
+        message = '|'.join(message)
+        for conn in self.childs.values():
+            self.send(conn,message)
 
     def send_rrep(self,dest):
         '''Send an RREP message back to the RREQ originator'''
@@ -225,19 +223,16 @@ class AODV(threading.Thread):
             self.forward_rrep(message)
 
     def forward_rrep(self,message):
-        orig = message[1]
         dest = message[3]
-        # Check the routing table is deleted or not
-        if orig in self.routing_table:
-            route = self.routing_table[orig]
-            message[2] = self.node_id
-            message[6] = str(route['Distance'])
-            message[4] = '%s,%s'%tuple(self.coor)
-            message[5] = str(route['Hop'])
-            message[7] = str(route['Power'])
-            message = '|'.join(message)
-            next_hop = self.routing_table[dest]['Next-Hop']
-            self.send(self.parents[next_hop],message)
+        coor = message[4].split(',')
+        message[2] = self.node_id
+        message[4] = '%s,%s'%tuple(self.coor)
+        message[5] = str(int(message[5]) + 1)
+        message[6] = str(float(message[6])+self.distance(coor))
+        message[7] = str(min(float(message[7]),self.power))
+        message = '|'.join(message)
+        next_hop = self.routing_table[dest]['Next-Hop']
+        self.send(self.parents[next_hop],message)
 
     def send_user_message(self,dest,msg_data):
         message = 'USER|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
@@ -320,13 +315,13 @@ class Network:
 
     def reset(self,factor):
         for node in self.nodes:
-            self.nodes[node].metric = {'dist':-1,'hop': -1*factor,'power':factor}
+            self.nodes[node].metric = {'dist':-1,'hop': -1+factor,'power':factor}
             self.nodes[node].rreq_id = 0
             self.nodes[node].power = 5
             self.nodes[node].sent_bytes = 0
             self.nodes[node].received_bytes = 0
             self.nodes[node].routing_table = {}
-            self.nodes[node].rreq_id_list = {}
+            self.nodes[node].timers = {}
             self.nodes[node].msg_box = {}
             self.nodes[node].pending_msg_q = {}
 

@@ -56,10 +56,13 @@ class RPL(threading.Thread):
         return loss
 
     def readline(self,sock):
-        data = sock.recv(1)
-        while b'\r\n' not in data:
-            data += sock.recv(1)
-        return data.decode()
+        try:
+            data = sock.recv(1)
+            while b'\r\n' not in data:
+                data += sock.recv(1)
+            return data.decode()
+        except:
+            return ''
 
     def listener(self,sock):
         while True:
@@ -141,11 +144,12 @@ class RPL(threading.Thread):
         for parent in self.parents:
             self.send(self.parents[parent],message)
 
-    def send_dio(self,orig=None,rank=0,dist=0):
+    def send_dio(self,orig=None,rank=0,dist=0,power=None):
         self.rank = rank # rank from sink
         self.dist = dist # distance from sink
         orig = orig or self.node_id
-        message = 'DIO|%s|%s|%s,%s|%s|%s|%s|\r\n'%(orig,self.node_id,*self.coor,self.rank,self.dist,self.power)
+        power = power or self.INF
+        message = 'DIO|%s|%s|%s,%s|%s|%s|%s|\r\n'%(orig,self.node_id,*self.coor,self.rank,self.dist,power)
         for node in self.childs:
             self.send(self.childs[node],message)
 
@@ -157,7 +161,7 @@ class RPL(threading.Thread):
         coor = message[3].split(',')
         rank = int(message[4])+1
         dist = float(message[5])+self.distance(coor)
-        power = float(message[6])
+        power = min(float(message[6]),self.power)
 
         if orig in self.recv_dio:
             self.recv_dio[orig].add(sender)
@@ -174,7 +178,7 @@ class RPL(threading.Thread):
         else:
             return
         # Send DIO if best parent updated
-        self.send_dio(orig,rank,dist)
+        self.send_dio(orig,rank,dist,power)
 
     def obj_func(self,dictionary):
         score = 0
@@ -282,7 +286,7 @@ class Network:
 
     def reset(self,factor):
         for node in self.nodes:
-            self.nodes[node].metric = {'dist':-1,'rank': -1*factor,'power':factor}
+            self.nodes[node].metric = {'dist':-1,'rank': -1+factor,'power':factor}
             self.nodes[node].power = 5
             self.nodes[node].rank = None
             self.nodes[node].dist = None
