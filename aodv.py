@@ -227,15 +227,17 @@ class AODV(threading.Thread):
     def forward_rrep(self,message):
         orig = message[1]
         dest = message[3]
-        route = self.routing_table[orig]
-        message[2] = self.node_id
-        message[6] = str(route['Distance'])
-        message[4] = '%s,%s'%tuple(self.coor)
-        message[5] = str(route['Hop'])
-        message[7] = str(route['Power'])
-        message = '|'.join(message)
-        next_hop = self.routing_table[dest]['Next-Hop']
-        self.send(self.parents[next_hop],message)
+        # Check the routing table is deleted or not
+        if orig in self.routing_table:
+            route = self.routing_table[orig]
+            message[2] = self.node_id
+            message[6] = str(route['Distance'])
+            message[4] = '%s,%s'%tuple(self.coor)
+            message[5] = str(route['Hop'])
+            message[7] = str(route['Power'])
+            message = '|'.join(message)
+            next_hop = self.routing_table[dest]['Next-Hop']
+            self.send(self.parents[next_hop],message)
 
     def send_user_message(self,dest,msg_data):
         message = 'USER|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
