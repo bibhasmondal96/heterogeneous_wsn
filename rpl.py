@@ -168,13 +168,11 @@ class RPL(threading.Thread):
 
         score = self.obj_func({'dist':dist,'power':power,'rank':rank})
 
-        if not self.best_parent:
-            self.best_parent['node_id'] = sender
-            self.best_parent['score'] = score
-        elif self.best_parent['score'] < score:
+        if orig not in self.best_parent:
+            self.best_parent[orig] = {'node_id':sender,'score':score}
+        elif self.best_parent[orig]['score'] < score:
             # Update best parent
-            self.best_parent['node_id'] = sender
-            self.best_parent['score'] = score
+            self.best_parent[orig] = {'node_id':sender,'score':score}
         else:
             return
         # Send DIO if best parent updated
@@ -194,12 +192,12 @@ class RPL(threading.Thread):
         self.send_dis(dest)
         for _ in range(self.MAX_ATTEMPT):
             if len(self.sent_dis[dest]) == len(self.recv_dio[dest]):
-                if self.best_parent:
-                    best_parent = self.best_parent['node_id']
+                if dest in self.best_parent:
+                    best_parent = self.best_parent[dest]['node_id']
                     self.send(self.parents[best_parent],message)
                     # send pending msg if available
                     if self.pending_msg_q:
-                        self.send_pending_msgs()
+                        self.send_pending_msgs(dest)
                     return
                 else:
                     break
@@ -207,14 +205,14 @@ class RPL(threading.Thread):
                 time.sleep(self.ATTEMPT_TIME)
         self.pending_msg_q[dest] = {'orig':self.node_id,'msg_data':msg_data}
 
-    def send_pending_msgs(self):
-        if self.best_parent:
+    def send_pending_msgs(self,dest):
+        if dest in self.best_parent:
             for dest in list(self.pending_msg_q):
                 msg = self.pending_msg_q.pop(dest)
                 orig = msg['orig']
                 msg_data = msg['msg_data']
                 message = 'USER|%s|%s|%s|\r\n'%(orig,dest,msg_data)
-                best_parent = self.best_parent['node_id']
+                best_parent = self.best_parent[dest]['node_id']
                 self.send(self.parents[best_parent],message)
 
     def process_msg(self,message):
@@ -233,8 +231,8 @@ class RPL(threading.Thread):
         msg_data = message[3]
         message = '|'.join(message)
 
-        if self.best_parent:
-            best_parent = self.best_parent['node_id']
+        if dest in self.best_parent:
+            best_parent = self.best_parent[dest]['node_id']
             self.send(self.parents[best_parent],message)
         else:
             self.pending_msg_q[dest] = {'orig':orig,'msg_data':msg_data}
@@ -255,7 +253,7 @@ class Node(RPL):
         super(Node,self).__init__(addr,coor)
 
 class Network:
-    ATTEMPT_TIME = 0.5
+    ATTEMPT_TIME = 2
     MAX_ATTEMPT = 10
 
     def __init__(self,no_of_node,ip='127.0.0.1',start_port=8000):
@@ -317,13 +315,17 @@ class Network:
                 y = [self.nodes[node].coor[1],self.nodes[child].coor[1]]
                 plt.plot(x, y, '-o')
 
-    def plot_best_parent_connection(self):
+    def plot_dest_connection(self,dest):
+        self.nodes[dest].send_dio()
         for node in self.nodes.values():
-            if node.best_parent:
-                best_parent = self.nodes[node.best_parent['node_id']]
-                x = [best_parent.coor[0],node.coor[0]]
-                y = [best_parent.coor[1],node.coor[1]]
-                plt.plot(x, y, '-o')
+            for _ in range(self.MAX_ATTEMPT):
+                if dest in node.best_parent:
+                    best_parent = self.nodes[node.best_parent[dest]['node_id']]
+                    x = [best_parent.coor[0],node.coor[0]]
+                    y = [best_parent.coor[1],node.coor[1]]
+                    plt.plot(x, y, '-o')
+                    break
+                time.sleep(self.ATTEMPT_TIME)
 
     def plot_network(self):
         x=[]
@@ -356,8 +358,7 @@ except:pass
 network = Network(10)
 network.plot_network()
 network.plot_neighbour_connection()
-network.nodes['127.0.0.1:8009'].send_dio()
 network.plot_network()
-network.plot_best_parent_connection()
+network.plot_dest_connection('127.0.0.1:8009')
 network.plot_transfer_stat('127.0.0.1:8009')
 network.nodes['127.0.0.1:8009'].msg_box
