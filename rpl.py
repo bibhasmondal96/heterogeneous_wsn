@@ -27,8 +27,6 @@ class RPL(threading.Thread):
         self.sent_bytes = 0
         self.received_bytes = 0
         self.dis_id_list = {}
-        self.sent_dis = {}
-        self.recv_dio = {}
         self.parents = {}
         self.childs = {}
         self.timers = {}
@@ -117,11 +115,8 @@ class RPL(threading.Thread):
     def send_dis(self,dest):
         self.dis_id += 1
         message = 'DIS|%s|%s|%s|\r\n'%(self.dis_id,self.node_id,dest)
-        self.sent_dis[dest] = set()
-        self.recv_dio[dest] = set()
         for parent in self.parents:
             self.send(self.parents[parent],message)
-            self.sent_dis[dest].add(parent)
 
     def process_dis(self,message):
         dis_id = message[1]
@@ -139,11 +134,8 @@ class RPL(threading.Thread):
         if self.node_id == dest:
             # send dio
             self.send_dio()
-        elif self.parents:
+        else :
             self.forward_dis(message)
-        else:
-            # send dio with infinite distance and rank from sink
-            self.send_dio(self.INF,self.INF)
 
     def forward_dis(self,message):
         message = '|'.join(message)
@@ -172,9 +164,6 @@ class RPL(threading.Thread):
         rank = int(message[5])+1
         dist = float(message[6])+self.distance(coor)
         power = min(float(message[7]),self.power)
-
-        if orig in self.recv_dio:
-            self.recv_dio[orig].add(sender)
 
         score = self.obj_func({'dist':dist,'power':power,'rank':rank})
 
@@ -209,21 +198,19 @@ class RPL(threading.Thread):
 
     def send_msg(self,dest,msg_data):
         message = 'USER|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
+        self.best_parent.pop(dest,None)
         self.send_dis(dest)
         for _ in range(self.MAX_ATTEMPT):
-            if len(self.sent_dis[dest]) == len(self.recv_dio[dest]):
-                if dest in self.best_parent:
-                    # Wait until finding the best path
-                    while True:
-                        if self.best_parent[dest]['is_best']:
-                            best_parent = self.best_parent[dest]['node_id']
-                            self.send(self.parents[best_parent],message)
-                            # send pending msg if available
-                            if self.pending_msg_q:
-                                self.send_pending_msgs(dest)
-                            return
-                else:
-                    break
+            if dest in self.best_parent:
+                # Wait until finding the best path
+                while True:
+                    if self.best_parent[dest]['is_best']:
+                        best_parent = self.best_parent[dest]['node_id']
+                        self.send(self.parents[best_parent],message)
+                        # send pending msg if available
+                        if self.pending_msg_q:
+                            self.send_pending_msgs(dest)
+                        return
             else:
                 time.sleep(self.ATTEMPT_TIME)
         self.pending_msg_q[dest] = {'orig':self.node_id,'msg_data':msg_data}
@@ -314,8 +301,6 @@ class Network:
             self.dag_id = 0
             self.nodes[node].sent_bytes = 0
             self.nodes[node].received_bytes = 0
-            self.sent_dis = {}
-            self.recv_dio = {}
             self.nodes[node].best_parent = {}
             self.nodes[node].msg_box = {}
             self.nodes[node].pending_msg_q = {}
