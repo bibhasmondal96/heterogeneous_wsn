@@ -18,7 +18,7 @@ class AODV(threading.Thread):
         self.addr = addr
         self.coor = coor #[x,y]
         self.node_id = "%s:%s"%addr
-        self.rreq_id = 0
+        self.seq_no = 0
         self.power = 5
         self.sent_bytes = 0
         self.received_bytes = 0
@@ -114,22 +114,22 @@ class AODV(threading.Thread):
         return score
 
     def send_rreq(self,dest):
-        self.rreq_id += 1
-        rreq_id = self.rreq_id
+        self.seq_no += 1
+        seq_no = self.seq_no
         orig = self.node_id
         sender = self.node_id
         power = self.INF
         coor = self.coor
         dist = 0
         hop = 0        
-        message = 'RREQ|%s|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(rreq_id,orig,sender,dest,*self.coor,hop,dist,power)
+        message = 'RREQ|%s|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(seq_no,orig,sender,dest,*self.coor,hop,dist,power)
         for child in self.childs:
             self.send(self.childs[child],message)
 
     def process_rreq(self,message):
         '''Process an incoming RREQ message'''
         # Extract the relevant parameters from the message
-        rreq_id = int(message[1])
+        seq_no = int(message[1])
         orig = message[2]
         sender = message[3]
         dest = message[4]
@@ -145,16 +145,28 @@ class AODV(threading.Thread):
         # Insert or update routing table if needed
         if orig not in self.routing_table:
             self.routing_table[orig] = {
-                'Next-Hop':sender,
-                'Hop':hop,
+                'Next-Hop': sender,
+                'Seq-No': seq_no,
+                'Hop': hop,
                 'Distance': dist,
                 'Power': power,
                 'Score': score
             }
-        elif self.routing_table[orig]['Score']<score:
+        elif self.routing_table[orig]['Seq-No'] < seq_no:
+            # Update current path
+            self.routing_table[orig] = {
+                'Next-Hop': sender,
+                'Seq-No': seq_no,
+                'Hop': hop,
+                'Distance': dist,
+                'Power': power,
+                'Score': score
+            }
+        elif self.routing_table[orig]['Score'] < score:
             # Update routing table
             self.routing_table[orig] = {
                 'Next-Hop':sender,
+                'Seq-No': seq_no,
                 'Hop':hop,
                 'Distance': dist,
                 'Power': power,
@@ -165,15 +177,11 @@ class AODV(threading.Thread):
         if self.node_id == dest:
             # Restart timer on getiing rreq
             if orig in self.timers:
-                timer = self.timers[orig]
-                if timer['rreq_id'] == rreq_id:
-                    # Cancel previous time
-                    timer['timer'].cancel()
+                # Cancel previous time
+                self.timers[orig].cancel()
             # Add timer
-            self.timers[orig] = {}
-            self.timers[orig]['rreq_id'] = rreq_id
-            self.timers[orig]['timer'] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.send_rrep,[orig,])
-            self.timers[orig]['timer'].start()
+            self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.send_rrep,[orig,])
+            self.timers[orig].start()
         else:
             self.forward_rreq(message)
 
@@ -191,29 +199,34 @@ class AODV(threading.Thread):
 
     def send_rrep(self,dest):
         '''Send an RREP message back to the RREQ originator'''
+        self.seq_no += 1
+        seq_no = self.seq_no
         orig = self.node_id
         sender = self.node_id
         power = self.INF
         coor = self.coor
         dist = 0
         hop = 0
-        message = 'RREP|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(orig,sender,dest,*coor,hop,dist,power)
+        message = 'RREP|%s|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(seq_no,orig,sender,dest,*coor,hop,dist,power)
         next_hop = self.routing_table[dest]['Next-Hop']
         self.send(self.parents[next_hop],message)
 
     def process_rrep(self,message):
         '''Process an incoming RREP message'''
         # Extract the relevant fields from the message
-        orig = message[1]
-        sender = message[2]
-        dest = message[3]
-        coor = message[4].split(',')
-        hop = int(message[5]) + 1
-        dist = float(message[6])+self.distance(coor)
-        power = min(float(message[7]),self.power)
+        seq_no = int(message[1])
+        orig = message[2]
+        sender = message[3]
+        dest = message[4]
+        coor = message[5].split(',')
+        hop = int(message[6]) + 1
+        dist = float(message[7])+self.distance(coor)
+        power = min(float(message[8]),self.power)
+
         score = self.obj_func({'dist':dist,'power':power,'hop':hop})
         self.routing_table[orig] = {
             'Next-Hop':sender,
+            'Seq-No': seq_no,
             'Hop':hop,
             'Distance': dist,
             'Power': power,
@@ -223,13 +236,13 @@ class AODV(threading.Thread):
             self.forward_rrep(message)
 
     def forward_rrep(self,message):
-        dest = message[3]
-        coor = message[4].split(',')
-        message[2] = self.node_id
-        message[4] = '%s,%s'%tuple(self.coor)
-        message[5] = str(int(message[5]) + 1)
-        message[6] = str(float(message[6])+self.distance(coor))
-        message[7] = str(min(float(message[7]),self.power))
+        dest = message[4]
+        coor = message[5].split(',')
+        message[3] = self.node_id
+        message[5] = '%s,%s'%tuple(self.coor)
+        message[6] = str(int(message[6]) + 1)
+        message[7] = str(float(message[7])+self.distance(coor))
+        message[8] = str(min(float(message[8]),self.power))
         message = '|'.join(message)
         next_hop = self.routing_table[dest]['Next-Hop']
         self.send(self.parents[next_hop],message)
@@ -285,7 +298,7 @@ class Node(AODV):
 
 class Network:
     MAX_ATTEMPT = 10
-    ATTEMPT_TIME = 0.5
+    ATTEMPT_TIME = 2
 
     def __init__(self,no_of_node,ip='127.0.0.1',start_port=8000):
         self.no_of_node = no_of_node
@@ -299,7 +312,6 @@ class Network:
 
     def init_neighbour(self):
         for node in self.nodes:
-            self.nodes[node].routing_table = {}
             self.nodes[node].parents = {}
             self.nodes[node].childs = {}
         for node1 in self.nodes:
@@ -316,7 +328,7 @@ class Network:
     def reset(self,factor):
         for node in self.nodes:
             self.nodes[node].metric = {'dist':-1,'hop': -1+factor,'power':factor}
-            self.nodes[node].rreq_id = 0
+            self.nodes[node].seq_no = 0
             self.nodes[node].power = 5
             self.nodes[node].sent_bytes = 0
             self.nodes[node].received_bytes = 0

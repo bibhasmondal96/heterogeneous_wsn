@@ -12,6 +12,7 @@ class RPL(threading.Thread):
     ATTEMPT_TIME = 1
     MAX_ATTEMPT = 10
     INF = 999
+    BEST_PATH_WAIT_TIME = 1
 
     def __init__(self,addr,coor):
         super(RPL,self).__init__()
@@ -19,6 +20,7 @@ class RPL(threading.Thread):
         self.coor = coor #[x,y]
         self.node_id = "%s:%s"%addr
         self.dis_id = 0
+        self.dag_id = 0
         self.power = 5
         self.rank = None
         self.dist = None
@@ -29,6 +31,7 @@ class RPL(threading.Thread):
         self.recv_dio = {}
         self.parents = {}
         self.childs = {}
+        self.timers = {}
         self.best_parent = {} #{'node_id':node_id,'score':score}
         self.msg_box = {}
         self.pending_msg_q = {}
@@ -107,6 +110,9 @@ class RPL(threading.Thread):
         dx = float(coor[0])-self.coor[0]
         dy = float(coor[1])-self.coor[1]
         return (dx**2+dy**2)**0.5
+    
+    def set_best_parent(self,sink):
+        self.best_parent[sink]['is_best'] = 1
 
     def send_dis(self,dest):
         self.dis_id += 1
@@ -144,24 +150,28 @@ class RPL(threading.Thread):
         for parent in self.parents:
             self.send(self.parents[parent],message)
 
-    def send_dio(self,orig=None,rank=0,dist=0,power=None):
+    def send_dio(self,dag_id=None,orig=None,rank=0,dist=0,power=None):
+        if not rank:self.dag_id += 1
+        dag_id = dag_id or self.dag_id
+        orig = orig or self.node_id
         self.rank = rank # rank from sink
         self.dist = dist # distance from sink
-        orig = orig or self.node_id
         power = power or self.INF
-        message = 'DIO|%s|%s|%s,%s|%s|%s|%s|\r\n'%(orig,self.node_id,*self.coor,self.rank,self.dist,power)
+        message = 'DIO|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(dag_id,orig,self.node_id,*self.coor,self.rank,self.dist,power)
         for node in self.childs:
             self.send(self.childs[node],message)
 
     def process_dio(self,message):
         # return if current node is sink
         if self.rank==0:return
-        orig = message[1]
-        sender = message[2]
-        coor = message[3].split(',')
-        rank = int(message[4])+1
-        dist = float(message[5])+self.distance(coor)
-        power = min(float(message[6]),self.power)
+
+        dag_id = message[1]
+        orig = message[2]
+        sender = message[3]
+        coor = message[4].split(',')
+        rank = int(message[5])+1
+        dist = float(message[6])+self.distance(coor)
+        power = min(float(message[7]),self.power)
 
         if orig in self.recv_dio:
             self.recv_dio[orig].add(sender)
@@ -169,14 +179,24 @@ class RPL(threading.Thread):
         score = self.obj_func({'dist':dist,'power':power,'rank':rank})
 
         if orig not in self.best_parent:
-            self.best_parent[orig] = {'node_id':sender,'score':score}
+            self.best_parent[orig] = {'dag_id':dag_id,'node_id':sender,'score':score,'is_best':0}
+        elif self.best_parent[orig]['dag_id'] < dag_id:
+            # Update best parent for current dag
+            self.best_parent[orig] = {'dag_id':dag_id,'node_id':sender,'score':score,'is_best':0}
         elif self.best_parent[orig]['score'] < score:
             # Update best parent
-            self.best_parent[orig] = {'node_id':sender,'score':score}
+            self.best_parent[orig] = {'dag_id':dag_id,'node_id':sender,'score':score,'is_best':0}
         else:
             return
         # Send DIO if best parent updated
-        self.send_dio(orig,rank,dist,power)
+        self.send_dio(dag_id,orig,rank,dist,power)
+        # Restart timer on getiing rreq
+        if orig in self.timers:
+            # Cancel previous timer
+            self.timers[orig].cancel()
+        # Add timer
+        self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.set_best_parent,[orig,])
+        self.timers[orig].start()
 
     def obj_func(self,dictionary):
         score = 0
@@ -193,12 +213,15 @@ class RPL(threading.Thread):
         for _ in range(self.MAX_ATTEMPT):
             if len(self.sent_dis[dest]) == len(self.recv_dio[dest]):
                 if dest in self.best_parent:
-                    best_parent = self.best_parent[dest]['node_id']
-                    self.send(self.parents[best_parent],message)
-                    # send pending msg if available
-                    if self.pending_msg_q:
-                        self.send_pending_msgs(dest)
-                    return
+                    # Wait until finding the best path
+                    while True:
+                        if self.best_parent[dest]['is_best']:
+                            best_parent = self.best_parent[dest]['node_id']
+                            self.send(self.parents[best_parent],message)
+                            # send pending msg if available
+                            if self.pending_msg_q:
+                                self.send_pending_msgs(dest)
+                            return
                 else:
                     break
             else:
@@ -268,7 +291,6 @@ class Network:
 
     def init_neighbour(self):
         for node in self.nodes:
-            self.nodes[node].best_parent = {}
             self.nodes[node].parents = {}
             self.nodes[node].childs = {}
         for node1 in self.nodes:
@@ -288,8 +310,12 @@ class Network:
             self.nodes[node].power = 5
             self.nodes[node].rank = None
             self.nodes[node].dist = None
+            self.dis_id = 0
+            self.dag_id = 0
             self.nodes[node].sent_bytes = 0
             self.nodes[node].received_bytes = 0
+            self.sent_dis = {}
+            self.recv_dio = {}
             self.nodes[node].best_parent = {}
             self.nodes[node].msg_box = {}
             self.nodes[node].pending_msg_q = {}
