@@ -9,8 +9,7 @@ class AODV(threading.Thread):
     transfer_loss = {"send":0.005,"receive":0.002}
     transfer_threshold = {"send": 1.5, "receive": 0.5}
     metric = {'dist':-1,'hop': -0.50,'power':0.50}
-    BEST_PATH_WAIT_TIME = 1
-    ATTEMPT_TIME = 1
+    WAIT_TIME = 2
     MAX_ATTEMPT = 10
 
     def __init__(self,addr,coor):
@@ -66,7 +65,6 @@ class AODV(threading.Thread):
             if message:
                 if message[:4] == 'USER':
                     if len(message)<=self.max_byte('receive'):
-                        print('Received %s bytes'%len(message))
                         # Update params
                         self.received_bytes += len(message)
                         self.power -= self.power_loss(message,'receive')
@@ -95,7 +93,6 @@ class AODV(threading.Thread):
                 # Update params
                 self.sent_bytes += len(message)
                 self.power -= self.power_loss(message,'send')
-                print('Sent %s bytes'%len(message))
             else:
                 print('Low power')
 
@@ -137,6 +134,10 @@ class AODV(threading.Thread):
         hop = int(message[6]) + 1
         dist = float(message[7])+self.distance(coor)
         power = min(float(message[8]),self.power)
+        # Cancel previous time
+        if self.node_id == dest:
+            if orig in self.timers:
+                self.timers[orig].cancel()
         # Check if we are the origin. If we are, discard this RREP.
         if (self.node_id == orig):
             return
@@ -173,14 +174,14 @@ class AODV(threading.Thread):
                 'Score': score
             }
         else:
+            if self.node_id == dest:
+                # Start or restart timer on getiing rreq
+                self.timers[orig] = threading.Timer(self.WAIT_TIME,self.send_rrep,[orig,])
+                self.timers[orig].start()
             return
         if self.node_id == dest:
-            # Restart timer on getiing rreq
-            if orig in self.timers:
-                # Cancel previous time
-                self.timers[orig].cancel()
-            # Add timer
-            self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.send_rrep,[orig,])
+            # Start or restart timer on getiing rreq
+            self.timers[orig] = threading.Timer(self.WAIT_TIME,self.send_rrep,[orig,])
             self.timers[orig].start()
         else:
             self.forward_rreq(message)
@@ -248,6 +249,7 @@ class AODV(threading.Thread):
         self.send(self.parents[next_hop],message)
 
     def send_user_message(self,dest,msg_data):
+        '''Send an USER message'''
         message = 'USER|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
         self.send_rreq(dest)
         for _ in range(self.MAX_ATTEMPT):
@@ -259,20 +261,33 @@ class AODV(threading.Thread):
                     self.send_pending_msgs()
                 return
             else:
-                time.sleep(self.ATTEMPT_TIME)
+                time.sleep(self.WAIT_TIME)
         self.pending_msg_q[dest] = {'orig':self.node_id,'msg_data':msg_data}
 
+    def send_pending_msgs(self,dest):
+        '''Send a pending USER message'''
+        if dest in self.routing_table:
+            for dest in list(self.pending_msg_q):
+                msg = self.pending_msg_q.pop(dest)
+                orig = msg['orig']
+                msg_data = msg['msg_data']
+                message = 'USER|%s|%s|%s|\r\n'%(orig,dest,msg_data)
+                next_hop = self.routing_table[dest]['Next-Hop']
+                self.send(self.childs[next_hop],message)
+
     def process_user_message(self,message):
+        '''Process an USER message'''
         orig = message[1]
         dest = message[2]
         msg_data = message[3]
         if self.node_id == dest:
             self.msg_box[orig] = msg_data
-            print('New message arrived')
+            print('New message arrived %s'%orig)
         else:
             self.forward_user_message(message)
 
     def forward_user_message(self,message):
+        '''Resend an USER message'''
         orig = message[1]
         dest = message[2]
         msg_data = message[3]
@@ -297,8 +312,8 @@ class Node(AODV):
         super(Node,self).__init__(addr,coor)
 
 class Network:
+    WAIT_TIME = 3
     MAX_ATTEMPT = 10
-    ATTEMPT_TIME = 2
 
     def __init__(self,no_of_node,ip='127.0.0.1',start_port=8000):
         self.no_of_node = no_of_node
@@ -341,6 +356,7 @@ class Network:
         transfer = []
         power = []
         for i in [0.0,0.2,0.4,0.6,0.8,1.0]:
+            print('%s%s%s'%('-'*18,i,'-'*18))
             total = 0
             self.reset(i)               
             self.start_season(dest)
@@ -362,7 +378,7 @@ class Network:
                         y = [self.nodes[route['Next-Hop']].coor[1],node.coor[1]]
                         plt.plot(x, y, '-o')
                         break
-                    time.sleep(self.ATTEMPT_TIME)
+                    time.sleep(self.WAIT_TIME)
 
     def plot_neighbour_connection(self):
         for node in self.nodes:
@@ -395,7 +411,7 @@ class Network:
                 for _ in range(self.MAX_ATTEMPT):
                     if node in self.nodes[dest].msg_box:
                         break
-                    time.sleep(self.ATTEMPT_TIME)
+                    time.sleep(self.WAIT_TIME)
 
 try:network.shutdown()
 except:pass
