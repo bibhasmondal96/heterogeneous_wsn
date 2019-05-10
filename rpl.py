@@ -8,10 +8,11 @@ class RPL(threading.Thread):
     
     transfer_loss = {"send":0.005,"receive":0.002}
     transfer_threshold = {"send": 1.5, "receive": 0.5}
-    metric = {'dist':-1,'rank': -0.50,'power':0.50}
+    metric = {'dist':-0,'rank': -0.50,'power':0.50}
     INF = 999
-    WAIT_TIME = 2
-    MAX_ATTEMPT = 10
+    MAX_ATTEMPT = 50
+    BEST_PATH_WAIT_TIME = 2
+    ATTEMPT_WAIT_TIME = 0.2
 
     def __init__(self,addr,coor):
         super(RPL,self).__init__()
@@ -29,7 +30,7 @@ class RPL(threading.Thread):
         self.parents = {}
         self.childs = {}
         self.timers = {}
-        self.best_parent = {} #{'node_id':node_id,'score':score}
+        self.best_parent = {} #{'dag_id':dag_id,'node_id':node_id,'score':score,'is_best':0}
         self.msg_box = {}
         self.pending_msg_q = {}
         self.sock = socket.socket()
@@ -44,7 +45,14 @@ class RPL(threading.Thread):
             s.connect(node)
             s.send(self.node_id.encode())
             self.parents['%s:%s'%node] = s
-            threading.Thread(target=self.listener,args=(s,)).start()
+            threading.Thread(target=self.parent_handler,args=('%s:%s'%node,)).start()
+
+    def parent_handler(self,parent):       
+        try:
+            self.listener(self.parents[parent])
+        except:
+            self.parents.pop(parent,None)
+            self.best_parent.pop(parent,None)
 
     def max_byte(self,operation):
         avail_pow = self.power-self.transfer_threshold[operation]
@@ -56,13 +64,10 @@ class RPL(threading.Thread):
         return loss
 
     def readline(self,sock):
-        try:
-            data = sock.recv(1)
-            while b'\r\n' not in data:
-                data += sock.recv(1)
-            return data.decode()
-        except:
-            return ''
+        data = sock.recv(1)
+        while b'\r\n' not in data:
+            data += sock.recv(1)
+        return data.decode()
 
     def listener(self,sock):
         while True:
@@ -115,8 +120,9 @@ class RPL(threading.Thread):
         '''Broadcast an DIS message'''
         self.dis_id += 1
         message = 'DIS|%s|%s|%s|\r\n'%(self.dis_id,self.node_id,dest)
-        for parent in self.parents:
-            self.send(self.parents[parent],message)
+        for parent in list(self.parents):
+            # Check key exist or not due to dictionary change size during iteration
+            if parent in self.parents:self.send(self.parents[parent],message)
 
     def process_dis(self,message):
         '''Process an incoming DIS request'''
@@ -126,14 +132,14 @@ class RPL(threading.Thread):
         if self.node_id == orig:
             return
         if orig in self.dis_id_list:
-            # Discard duplicate dis mesage
+            # Discard duplicate DIS mesage
             if self.dis_id_list[orig] == dis_id:
                 return
         # Buffer dis id
         self.dis_id_list[orig] = dis_id
 
         if self.node_id == dest:
-            # send dio
+            # Send DIO
             self.send_dio()
         else :
             self.forward_dis(message)
@@ -141,8 +147,9 @@ class RPL(threading.Thread):
     def forward_dis(self,message):
         '''Rebroadcast an DIS request'''
         message = '|'.join(message)
-        for parent in self.parents:
-            self.send(self.parents[parent],message)
+        for parent in list(self.parents):
+            # Check key exist or not due to dictionary change size during iteration
+            if parent in self.parents:self.send(self.parents[parent],message)
 
     def send_dio(self,dag_id=None,orig=None,rank=0,dist=0,power=None):
         '''Broadcast an DIO message'''
@@ -161,7 +168,7 @@ class RPL(threading.Thread):
         # return if current node is sink
         if self.rank==0:return
 
-        dag_id = message[1]
+        dag_id = int(message[1])
         orig = message[2]
         sender = message[3]
         coor = message[4].split(',')
@@ -201,14 +208,14 @@ class RPL(threading.Thread):
             }
         else:
             # Add timer
-            self.timers[orig] = threading.Timer(self.WAIT_TIME,self.set_best_parent,[orig,])
+            self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.set_best_parent,[orig,])
             # Start timer
             self.timers[orig].start()
             return
         # Send DIO if best parent updated
         self.send_dio(dag_id,orig,rank,dist,power)
         # Add timer
-        self.timers[orig] = threading.Timer(self.WAIT_TIME,self.set_best_parent,[orig,])
+        self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.set_best_parent,[orig,])
         # Start timer
         self.timers[orig].start()
 
@@ -224,33 +231,39 @@ class RPL(threading.Thread):
     def send_msg(self,dest,msg_data):
         '''Send an USER message'''
         message = 'USER|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
-        self.best_parent.pop(dest,None)
+        # Reset best path flag to 0
+        if dest in self.best_parent:
+            self.best_parent[dest]['is_best'] = 0
+        # Broadcast DIS
         self.send_dis(dest)
         for _ in range(self.MAX_ATTEMPT):
             if dest in self.best_parent:
                 # Wait until finding the best path
-                while True:
-                    if self.best_parent[dest]['is_best']:
-                        best_parent = self.best_parent[dest]['node_id']
-                        self.send(self.parents[best_parent],message)
-                        # send pending msg if available
-                        if self.pending_msg_q:
-                            self.send_pending_msgs(dest)
-                        return
-            else:
-                time.sleep(self.WAIT_TIME)
-        self.pending_msg_q[dest] = {'orig':self.node_id,'msg_data':msg_data}
+                if self.best_parent[dest]['is_best']:
+                    best_parent = self.best_parent[dest]['node_id']
+                    self.send(self.parents[best_parent],message)
+                    # send pending msg if available
+                    self.send_pending_msgs(dest)
+                    return
+            time.sleep(self.ATTEMPT_WAIT_TIME)
+        if dest not in self.pending_msg_q:
+            self.pending_msg_q = []
+        self.pending_msg_q[dest].append({'orig':self.node_id,'msg_data':msg_data})
 
     def send_pending_msgs(self,dest):
         '''Send a pending USER message'''
-        if dest in self.best_parent:
-            for dest in list(self.pending_msg_q):
-                msg = self.pending_msg_q.pop(dest)
-                orig = msg['orig']
-                msg_data = msg['msg_data']
-                message = 'USER|%s|%s|%s|\r\n'%(orig,dest,msg_data)
-                best_parent = self.best_parent[dest]['node_id']
-                self.send(self.parents[best_parent],message)
+        if dest in self.pending_msg_q:
+            while self.pending_msg_q[dest]:
+                if dest in self.routing_table:
+                    msg = self.pending_msg_q[dest].pop(0)
+                    orig = msg['orig']
+                    msg_data = msg['msg_data']
+                    message = 'USER|%s|%s|%s|\r\n'%(orig,dest,msg_data)
+                    best_parent = self.best_parent[dest]['node_id']
+                    self.send(self.parents[best_parent],message)
+                else:
+                    return
+            self.pending_msg_q.pop(dest)
 
     def process_msg(self,message):
         '''Process an USER message'''
@@ -258,7 +271,9 @@ class RPL(threading.Thread):
         dest = message[2]
         msg_data = message[3]
         if self.node_id == dest:
-            self.msg_box[orig] = msg_data
+            if orig not in self.msg_box:
+                self.msg_box[orig] = []
+            self.msg_box[orig].append(msg_data)
             print('New message arrived from %s'%orig)
         else:
             self.forward_msg(message)
@@ -275,25 +290,29 @@ class RPL(threading.Thread):
             self.send(self.parents[best_parent],message)
         else:
             self.pending_msg_q[dest] = {'orig':orig,'msg_data':msg_data}
+            
+    def child_handler(self,conn):
+        try:self.listener(conn)
+        except:pass
 
     def run(self):
         while True:
             try:
                 conn , _ = self.sock.accept()
                 self.childs[conn.recv(21).decode()] = conn
-                threading.Thread(target=self.listener,args=(conn,)).start()
+                threading.Thread(target=self.child_handler,args=(conn,)).start()
             except:
                 print('Connection closed\n')
                 break
 
 class Node(RPL):
-    def __init__(self,addr,dist_range=[1,50]):
+    def __init__(self,addr,dist_range=[1,25]):
         coor = [random.randint(*dist_range), random.randint(*dist_range)]
         super(Node,self).__init__(addr,coor)
 
 class Network:
-    WAIT_TIME = 3
-    MAX_ATTEMPT = 10
+    MAX_ATTEMPT = 50
+    ATTEMPT_WAIT_TIME = 0.2
 
     def __init__(self,no_of_node,ip='127.0.0.1',start_port=8000):
         self.no_of_node = no_of_node
@@ -306,23 +325,27 @@ class Network:
         self.init_neighbour()
 
     def init_neighbour(self):
-        for node in self.nodes:
-            self.nodes[node].parents = {}
-            self.nodes[node].childs = {}
         for node1 in self.nodes:
             for node2 in self.nodes:
-                if self.nodes[node1].distance(self.nodes[node2].coor) <= self.nodes[node1].power**2 and node1 != node2:
-                    self.nodes[node2].connect(self.nodes[node1].addr)
+                if node1 != node2:
+                    if self.nodes[node1].distance(self.nodes[node2].coor) <= self.nodes[node1].power**2:
+                        if node1 not in self.nodes[node2].parents:
+                            self.nodes[node2].connect(self.nodes[node1].addr)
+                    else:
+                        # Remove from childs and close conn
+                        if node2 in self.nodes[node1].childs:
+                            conn = self.nodes[node1].childs.pop(node2)
+                            conn.close()
 
     def shutdown(self):
         for node in self.nodes.values():
+            for child in node.childs.values():
+                child.close()
             node.sock.close()
-            for parent in node.parents.values():
-                parent.close()
 
     def reset(self,factor):
         for node in self.nodes:
-            self.nodes[node].metric = {'dist':-1,'rank': -1+factor,'power':factor}
+            self.nodes[node].metric = {'dist':-0,'rank': -1+factor,'power':factor}
             self.nodes[node].power = 5
             self.nodes[node].rank = None
             self.nodes[node].dist = None
@@ -358,21 +381,21 @@ class Network:
                 plt.plot(x, y, '-o')
 
     def plot_dest_connection(self,dest):
+        self.init_neighbour()
         for node in self.nodes.values():
-            node.best_parent.pop(dest,None)
+            if dest in node.best_parent:
+                node.best_parent[dest]['is_best'] = 0
         self.nodes[dest].send_dio()
         for node in self.nodes.values():
             for _ in range(self.MAX_ATTEMPT):
                 if dest in node.best_parent:
-                    while True:
-                        if node.best_parent[dest]['is_best']:
-                            best_parent = self.nodes[node.best_parent[dest]['node_id']]
-                            x = [best_parent.coor[0],node.coor[0]]
-                            y = [best_parent.coor[1],node.coor[1]]
-                            plt.plot(x, y, '-o')
-                            break
-                    break
-                time.sleep(self.WAIT_TIME)
+                    if node.best_parent[dest]['is_best']:
+                        best_parent = self.nodes[node.best_parent[dest]['node_id']]
+                        x = [best_parent.coor[0],node.coor[0]]
+                        y = [best_parent.coor[1],node.coor[1]]
+                        plt.plot(x, y, '-o')
+                        break
+                time.sleep(self.ATTEMPT_WAIT_TIME)
 
     def plot_network(self):
         x=[]
@@ -398,7 +421,7 @@ class Network:
                 for _ in range(self.MAX_ATTEMPT):
                     if node in self.nodes[dest].msg_box:
                         break
-                    time.sleep(self.WAIT_TIME)
+                    time.sleep(self.ATTEMPT_WAIT_TIME)
 
 try:network.shutdown()
 except:pass
