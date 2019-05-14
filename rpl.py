@@ -174,9 +174,6 @@ class RPL(threading.Thread):
 
     def process_dio(self,message):
         '''Process an incoming DIO message'''
-        # return if current node is sink
-        if self.rank==0:return
-
         dag_id = int(message[1])
         orig = message[2]
         sender = message[3]
@@ -184,6 +181,9 @@ class RPL(threading.Thread):
         rank = int(message[5])+1
         dist = float(message[6])+self.distance(coor)
         power = min(float(message[7]),self.rem_power)
+        
+        # return if current node is sink
+        if self.node_id==orig:return
         
         # Restart timer on getiing rreq
         if orig in self.timers:
