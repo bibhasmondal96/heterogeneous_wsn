@@ -2,10 +2,12 @@ import time
 import socket
 import random
 import threading
+import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 class RPL(threading.Thread):
-    
+
     transfer_loss = {"send":0.005,"receive":0.002}
     transfer_threshold = {"send": 1.5, "receive": 0.5}
     metric = {'dist':-0,'rank': -0.50,'power':0.50}
@@ -14,14 +16,16 @@ class RPL(threading.Thread):
     BEST_PATH_WAIT_TIME = 2
     ATTEMPT_WAIT_TIME = 0.2
 
-    def __init__(self,addr,coor):
+    def __init__(self,addr,coor,power):
         super(RPL,self).__init__()
         self.addr = addr
         self.coor = coor #[x,y]
         self.node_id = "%s:%s"%addr
+        self.range_const = 0.05
         self.dis_id = 0
         self.dag_id = 0
-        self.power = 5
+        self.init_power = power
+        self.rem_power = power
         self.rank = None
         self.dist = None
         self.sent_bytes = 0
@@ -55,7 +59,7 @@ class RPL(threading.Thread):
             self.best_parent.pop(parent,None)
 
     def max_byte(self,operation):
-        avail_pow = self.power-self.transfer_threshold[operation]
+        avail_pow = self.rem_power-self.transfer_threshold[operation]
         byte = avail_pow/self.transfer_loss[operation]
         return int(byte)
 
@@ -77,7 +81,7 @@ class RPL(threading.Thread):
                     if len(message)<=self.max_byte('receive'):
                         # Update params
                         self.received_bytes += len(message)
-                        self.power -= self.power_loss(message,'receive')
+                        self.rem_power -= self.power_loss(message,'receive')
                         self.on_recv(message)
                     else:
                         print('Low power')
@@ -102,15 +106,20 @@ class RPL(threading.Thread):
                 sock.send(message.encode())
                 # Update params
                 self.sent_bytes += len(message)
-                self.power -= self.power_loss(message,'send')
+                self.rem_power -= self.power_loss(message,'send')
             else:
-                print('Low power',self.power)
+                print('Low power')
 
     def distance(self,coor):
         dx = float(coor[0])-self.coor[0]
         dy = float(coor[1])-self.coor[1]
         return (dx**2+dy**2)**0.5
-    
+
+    def is_neighbour(self,coor):
+        if self.distance(coor)<=self.range_const*self.rem_power**2:
+            return True
+        return False
+
     def set_best_parent(self,sink):
         # Check whether sink is deleted for other nodes
         if sink in self.best_parent:
@@ -174,7 +183,7 @@ class RPL(threading.Thread):
         coor = message[4].split(',')
         rank = int(message[5])+1
         dist = float(message[6])+self.distance(coor)
-        power = min(float(message[7]),self.power)
+        power = min(float(message[7]),self.rem_power)
         
         # Restart timer on getiing rreq
         if orig in self.timers:
@@ -247,14 +256,14 @@ class RPL(threading.Thread):
                     return
             time.sleep(self.ATTEMPT_WAIT_TIME)
         if dest not in self.pending_msg_q:
-            self.pending_msg_q = []
+            self.pending_msg_q[dest] = []
         self.pending_msg_q[dest].append({'orig':self.node_id,'msg_data':msg_data})
 
     def send_pending_msgs(self,dest):
         '''Send a pending USER message'''
         if dest in self.pending_msg_q:
             while self.pending_msg_q[dest]:
-                if dest in self.routing_table:
+                if dest in self.best_parent:
                     msg = self.pending_msg_q[dest].pop(0)
                     orig = msg['orig']
                     msg_data = msg['msg_data']
@@ -289,7 +298,9 @@ class RPL(threading.Thread):
             best_parent = self.best_parent[dest]['node_id']
             self.send(self.parents[best_parent],message)
         else:
-            self.pending_msg_q[dest] = {'orig':orig,'msg_data':msg_data}
+            if dest not in self.pending_msg_q:
+                self.pending_msg_q[dest] = []
+            self.pending_msg_q[dest].append({'orig':orig,'msg_data':msg_data})
             
     def child_handler(self,conn):
         try:self.listener(conn)
@@ -306,20 +317,20 @@ class RPL(threading.Thread):
                 break
 
 class Node(RPL):
-    def __init__(self,addr,dist_range=[1,25]):
+    def __init__(self,addr,power,dist_range):
         coor = [random.randint(*dist_range), random.randint(*dist_range)]
-        super(Node,self).__init__(addr,coor)
+        super(Node,self).__init__(addr,coor,power)
 
 class Network:
     MAX_ATTEMPT = 50
     ATTEMPT_WAIT_TIME = 0.2
 
-    def __init__(self,no_of_node,ip='127.0.0.1',start_port=8000):
+    def __init__(self,no_of_node=20,initial_node_power=20,dist_range=[0,50],ip='127.0.0.1',start_port=8000):
         self.no_of_node = no_of_node
         self.nodes = {}
         for i in range(no_of_node):
             addr = (ip,start_port+i)
-            self.nodes['%s:%s'%addr] = Node(addr)
+            self.nodes['%s:%s'%addr] = Node(addr,initial_node_power,dist_range)
             self.nodes['%s:%s'%addr].start()
         # Initilize neighbour
         self.init_neighbour()
@@ -328,7 +339,7 @@ class Network:
         for node1 in self.nodes:
             for node2 in self.nodes:
                 if node1 != node2:
-                    if self.nodes[node1].distance(self.nodes[node2].coor) <= self.nodes[node1].power**2:
+                    if self.nodes[node1].is_neighbour(self.nodes[node2].coor):
                         if node1 not in self.nodes[node2].parents:
                             self.nodes[node2].connect(self.nodes[node1].addr)
                     else:
@@ -346,7 +357,7 @@ class Network:
     def reset(self,factor):
         for node in self.nodes:
             self.nodes[node].metric = {'dist':-0,'rank': -1+factor,'power':factor}
-            self.nodes[node].power = 5
+            self.nodes[node].rem_power = self.nodes[node].init_power
             self.nodes[node].rank = None
             self.nodes[node].dist = None
             self.dis_id = 0
@@ -358,21 +369,21 @@ class Network:
             self.nodes[node].msg_box = {}
             self.nodes[node].pending_msg_q = {}
 
-    def plot_transfer_stat(self,dest):
+    def plot_transfer_stat(self,dest,no=1):
         transfer = []
-        power = []
+        power_factor = []
         for i in [0.0,0.2,0.4,0.6,0.8,1.0]:
             print('%s%s%s'%('-'*18,i,'-'*18))
             total = 0
             self.reset(i)               
-            self.start_season(dest)
+            self.start_session(dest,no)
             for name,node in self.nodes.items():
                 total += node.received_bytes+node.sent_bytes
             transfer.append(total/self.no_of_node)
-            power.append(i)
-        plt.plot(power,transfer)
+            power_factor.append(i)
+        plt.plot(power_factor,transfer)
         plt.show()
-  
+
     def plot_neighbour_connection(self):
         for node in self.nodes:
             for child in self.nodes[node].childs:
@@ -406,29 +417,149 @@ class Network:
         for node in self.nodes.values():
             x.append(node.coor[0])
             y.append(node.coor[1])
-            c.append(node.power)
+            c.append(node.rem_power/node.init_power)
             s.append(3.14*25**2) # mult 8.1
             plt.text(x[-1], y[-1],node.node_id,size=20,horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
         plt.scatter(x, y, s=s, c=c, alpha=0.6,picker=True)
         plt.grid(True)
 
-    def start_season(self,dest):
-        for node in self.nodes:
-            if node != dest:
-                self.init_neighbour()
-                self.nodes[node].send_msg(dest,'PING')
-                # Check whether msg reaches to dest
-                for _ in range(self.MAX_ATTEMPT):
-                    if node in self.nodes[dest].msg_box:
-                        break
-                    time.sleep(self.ATTEMPT_WAIT_TIME)
+    def start_session(self,dest,no=1):
+        count = 0
+        while count != no or no==-1: # -1 for infinite
+            for node in self.nodes:
+                if node != dest:
+                    sent = False
+                    self.init_neighbour()
+                    self.nodes[node].send_msg(dest,'PING')
+                    # Check whether msg reaches to dest
+                    for _ in range(self.MAX_ATTEMPT):
+                        if node in self.nodes[dest].msg_box:
+                            sent = True
+                            break
+                        time.sleep(self.ATTEMPT_WAIT_TIME)
+                    if not sent:
+                        return count
+            count += 1
+
+    def gini_coefficient(self):
+        x = []
+        y = []
+        for i,node1 in enumerate(self.nodes):
+            neighbours_power = []
+            for node2 in self.nodes:
+                if node1 != node2:
+                    if self.nodes[node1].is_neighbour(self.nodes[node2].coor):
+                        neighbours_power.append(self.nodes[node2].rem_power)
+            y.append(sum(neighbours_power))
+            x.append((i+1)/len(self.nodes))
+        y.sort()
+        b = y.copy()
+        n = len(self.nodes)
+        T = sum(y)
+        x = [0]+x
+        y = [0]+[sum(y[:i])/T for i in range(1,len(y)+1)]
+        # Caluclating gini coeff
+        polygon_area = (1/(n*T))*sum([(n-i+1/2)*b[i-1] for i in range(1,n+1)])
+        gini_coefficient = 1-2*polygon_area
+        return gini_coefficient
+
+    def plt_lorentz_curve(self):
+        x = []
+        y = []
+        for i,node1 in enumerate(self.nodes):
+            neighbours_power = []
+            for node2 in self.nodes:
+                if node1 != node2:
+                    if self.nodes[node1].is_neighbour(self.nodes[node2].coor):
+                        neighbours_power.append(self.nodes[node2].rem_power)
+            y.append(sum(neighbours_power))
+            x.append((i+1)/len(self.nodes))
+        y.sort()
+        b = y.copy()
+        n = len(self.nodes)
+        T = sum(y)
+        x = [0]+x
+        y = [0]+[sum(y[:i])/T for i in range(1,len(y)+1)]
+        # Caluclating gini coeff
+        polygon_area = (1/(n*T))*sum([(n-i+1/2)*b[i-1] for i in range(1,n+1)])
+        gini_coefficient = 1-2*polygon_area
+        # Lorenz curve
+        plt.plot(x,y,label="Lorenz curve")
+        # Line of perfect equality
+        plt.plot([x[0],x[-1]],[y[0],y[-1]],label="Line of perfect equality")
+        # Line of perfect inequality
+        plt.plot([x[0],x[-1],x[-1]],[y[0],y[0],y[-1]],color='black',label="Line of perfect inequality")
+        plt.text(0.2, 0.7,"Gini coefficient: %s"%round(giniCoefficient,2),horizontalalignment='center',verticalalignment='center',bbox=dict(facecolor='red', alpha=0.4))
+        plt.xlabel('Nodes(%)')
+        plt.ylabel('Energy(%)')
+        ticks = list(map(lambda v:v/100,range(0,101,10)))
+        plt.title("Energy(%) vs Nodes(%)", fontsize='large')
+        plt.xticks(ticks,ticks)
+        plt.yticks(ticks,ticks)
+        plt.grid(True)
+        plt.legend()
+
+    def plot_gini_stat(self,dest,no=1):
+        gini_index = []
+        power_factor = []
+        for i in [0.0,0.2,0.4,0.6,0.8,1.0]:
+            print('%s%s%s'%('-'*18,i,'-'*18))
+            self.reset(i)
+            self.start_session(dest,no)
+            gini_index.append(self.gini_coefficient())
+            power_factor.append(i)
+        plt.plot(power_factor,gini_index)
+        plt.show()
+
+    def plot_max_session(self,dest):
+        max_session = []
+        power_factor = []
+        for i in [0.0,0.2,0.4,0.6,0.8,1.0]:
+            print('%s%s%s'%('-'*18,i,'-'*18))
+            self.reset(i)
+            max_session.append(self.start_session(dest,-1))
+            power_factor.append(i)
+        plt.plot(power_factor,max_session)
+        plt.xlabel('Power Factor')
+        plt.ylabel('No of session')
+        plt.title("Max no of session) vs Power Factor", fontsize='large')
+        plt.grid(True)
+        plt.show()
+
+    def plot_energy_stat(self,dest,no=1):
+        x = np.arange(0.0,1.2, 0.2)
+        y = np.arange(0.0,1.1, 0.1)
+        y, x = np.meshgrid(y,x)
+        z = np.zeros_like(y)
+        for i,factor in enumerate(x[:,0]):
+            print('%s%s%s'%('-'*18,round(factor,1),'-'*18))
+            self.reset(factor)
+            self.start_session(dest,no)
+            for node in self.nodes.values():
+                for j,percent in enumerate(y[0]):
+                    if node.rem_power/node.init_power <= percent:
+                        z[i][j] += 1
+        x,y,z = x.ravel(),y.ravel(),z.ravel()
+        b = np.zeros_like(z)
+        c = list(map(lambda y:plt.cm.RdYlGn(y),y))
+        fig = plt.figure()
+        ax = fig.gca(projection='3d')
+        ax.bar3d(x,y, b, 0, 0.05, z, shade=True,color=c, alpha=0.8)
+        ax.set_zlabel('No of nodes')
+        ax.set_xlabel('Power Factor')
+        ax.set_ylabel('Remaining Energy')
+        plt.grid(True)
+        plt.show()
 
 try:network.shutdown()
 except:pass
-network = Network(10)
+network = Network()
 network.plot_network()
 network.plot_neighbour_connection()
 network.plot_network()
-network.plot_dest_connection('127.0.0.1:8009')
-network.plot_transfer_stat('127.0.0.1:8009')
-network.nodes['127.0.0.1:8009'].msg_box
+network.plot_dest_connection('127.0.0.1:8019')
+network.plot_transfer_stat('127.0.0.1:8019',3)
+network.plot_gini_stat('127.0.0.1:8019',3)
+network.plot_max_session('127.0.0.1:8019')
+network.plot_energy_stat('127.0.0.1:8019',3)
+network.nodes['127.0.0.1:8019'].msg_box
