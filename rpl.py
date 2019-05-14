@@ -10,7 +10,7 @@ class RPL(threading.Thread):
 
     transfer_loss = {"send":0.005,"receive":0.002}
     transfer_threshold = {"send": 1.5, "receive": 0.5}
-    metric = {'dist':-0,'rank': -0.50,'power':0.50}
+    metric = {'dist':-0.01,'rank': -1.0,'power':0.0}
     INF = 999
     MAX_ATTEMPT = 50
     BEST_PATH_WAIT_TIME = 2
@@ -35,8 +35,8 @@ class RPL(threading.Thread):
         self.childs = {}
         self.timers = {}
         self.best_parent = {} #{'dag_id':dag_id,'node_id':node_id,'score':score,'is_best':0}
-        self.msg_box = {}
-        self.pending_msg_q = {}
+        self.msg_box = {} #{'msg_data':msg_data,'is_read':0}
+        self.pending_msg_q = {} #{'orig':self.node_id,'msg_data':msg_data}
         self.sock = socket.socket()
         self.sock.bind(addr)
         self.sock.listen(5)
@@ -282,7 +282,7 @@ class RPL(threading.Thread):
         if self.node_id == dest:
             if orig not in self.msg_box:
                 self.msg_box[orig] = []
-            self.msg_box[orig].append(msg_data)
+            self.msg_box[orig].append({'msg_data':msg_data,'is_read':0})
             print('New message arrived from %s'%orig)
         else:
             self.forward_msg(message)
@@ -356,7 +356,7 @@ class Network:
 
     def reset(self,factor):
         for node in self.nodes:
-            self.nodes[node].metric = {'dist':-0,'rank': -1+factor,'power':factor}
+            self.nodes[node].metric = {'dist':-0.01,'rank': -1+factor,'power':factor}
             self.nodes[node].rem_power = self.nodes[node].init_power
             self.nodes[node].rank = None
             self.nodes[node].dist = None
@@ -382,6 +382,9 @@ class Network:
             transfer.append(total/self.no_of_node)
             power_factor.append(i)
         plt.plot(power_factor,transfer)
+        plt.xlabel('Power Factor')
+        plt.ylabel('Energy Transfer')
+        plt.title("Energy Transfer vs Power Factor", fontsize='large')
         plt.show()
 
     def plot_neighbour_connection(self):
@@ -434,8 +437,10 @@ class Network:
                     # Check whether msg reaches to dest
                     for _ in range(self.MAX_ATTEMPT):
                         if node in self.nodes[dest].msg_box:
-                            sent = True
-                            break
+                            if not self.nodes[dest].msg_box[node][-1]['is_read']:
+                                self.nodes[dest].msg_box[node][-1]['is_read'] = 1
+                                sent = True
+                                break
                         time.sleep(self.ATTEMPT_WAIT_TIME)
                     if not sent:
                         return count
@@ -509,6 +514,9 @@ class Network:
             gini_index.append(self.gini_coefficient())
             power_factor.append(i)
         plt.plot(power_factor,gini_index)
+        plt.xlabel('Power Factor')
+        plt.ylabel('Gini Coefficient')
+        plt.title("Gini Coefficient vs Power Factor", fontsize='large')
         plt.show()
 
     def plot_max_session(self,dest):
@@ -522,7 +530,7 @@ class Network:
         plt.plot(power_factor,max_session)
         plt.xlabel('Power Factor')
         plt.ylabel('No of session')
-        plt.title("Max no of session) vs Power Factor", fontsize='large')
+        plt.title("Max no of session vs Power Factor", fontsize='large')
         plt.grid(True)
         plt.show()
 
