@@ -6,57 +6,65 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-class RPL(threading.Thread):
+class AODV(threading.Thread):
 
     transfer_loss = {"send":0.005,"receive":0.002}
-    transfer_threshold = {"send": 1.5, "receive": 0.5}
-    metric = {'dist':-0.01,'rank': -1.0,'power':0.0}
+    transfer_threshold = {"send": 1.0, "receive": 0.5}
+    metric = {'dist':-0.01,'hop': -1.0,'power':0.0}
     INF = 999
-    MAX_ATTEMPT = 50
-    BEST_PATH_WAIT_TIME = 2
+    MAX_ATTEMPT = 100
+    BEST_PATH_WAIT_TIME = 3
     ATTEMPT_WAIT_TIME = 0.2
 
     def __init__(self,addr,coor,power):
-        super(RPL,self).__init__()
+        super(AODV,self).__init__()
         self.addr = addr
         self.coor = coor #[x,y]
         self.node_id = "%s:%s"%addr
         self.range_const = 0.05
-        self.dis_id = 0
-        self.dag_id = 0
+        self.seq_no = 0
         self.init_power = power
         self.rem_power = power
-        self.rank = None
-        self.dist = None
         self.sent_bytes = 0
         self.received_bytes = 0
-        self.dis_id_list = {}
         self.parents = {}
         self.childs = {}
-        self.timers = {}
-        self.best_parent = {} #{'dag_id':dag_id,'node_id':node_id,'score':score,'is_best':0}
+        self.routing_table = {}
+        self.timers = {} #{'rreq_id':rreq_id,'timer':timer}
         self.msg_box = {} #{'msg_data':msg_data,'is_read':0}
         self.pending_msg_q = {} #{'orig':self.node_id,'msg_data':msg_data}
-        self.sock = socket.socket()
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(addr)
-        self.sock.listen(5)
-
-    def connect(self,nodes):
+        
+    def add_parent(self,nodes):
         if not isinstance(nodes,list):
             nodes = [nodes]
         for node in nodes:
-            s = socket.socket()
-            s.connect(node)
-            s.send(self.node_id.encode())
-            self.parents['%s:%s'%node] = s
-            threading.Thread(target=self.parent_handler,args=('%s:%s'%node,)).start()
+            self.parents['%s:%s'%node] = node
 
-    def parent_handler(self,parent):       
-        try:
-            self.listener(self.parents[parent])
-        except:
-            self.parents.pop(parent,None)
-            self.best_parent.pop(parent,None)
+    def remove_parent(self,nodes):
+        if not isinstance(nodes,list):
+            nodes = [nodes]
+        for node in nodes:
+            self.parents.pop('%s:%s'%node,None)
+            for table in list(self.routing_table):
+                if self.routing_table[table]['Next-Hop'] == node:
+                    self.routing_table.pop(table,None)
+
+    def add_child(self,nodes):
+        if not isinstance(nodes,list):
+            nodes = [nodes]
+        for node in nodes:
+            self.childs['%s:%s'%node] = node
+
+    def remove_child(self,nodes):
+        if not isinstance(nodes,list):
+            nodes = [nodes]
+        for node in nodes:
+            self.childs.pop('%s:%s'%node,None)
+            for table in list(self.routing_table):
+                if self.routing_table[table]['Next-Hop'] == node:
+                    self.routing_table.pop(table,None)
 
     def max_byte(self,operation):
         avail_pow = self.rem_power-self.transfer_threshold[operation]
@@ -67,16 +75,11 @@ class RPL(threading.Thread):
         loss = len(message)*self.transfer_loss[op]
         return loss
 
-    def readline(self,sock):
-        data = sock.recv(1)
-        while b'\r\n' not in data:
-            data += sock.recv(1)
-        return data.decode()
-
     def listener(self,sock):
         while True:
-            message = self.readline(sock)
+            message,_ = sock.recvfrom(1024)
             if message:
+                message = message.decode()
                 if message[:4] == 'USER':
                     if len(message)<=self.max_byte('receive'):
                         # Update params
@@ -91,19 +94,19 @@ class RPL(threading.Thread):
     def on_recv(self,message):
         message = message.split('|')
         # Process message
-        switch = {'DIS':self.process_dis,
-                  'DIO':self.process_dio,
-                  'USER': self.process_msg}
+        switch = {'RREQ':self.process_rreq,
+                  'RREP':self.process_rrep,
+                  'USER': self.process_user_message}
         switch[message[0]](message)
 
-    def send(self,sock,message):
+    def send(self,addr,message):
         if message[:4] != 'USER':
             # send message
-            sock.send(message.encode())
+            self.sock.sendto(message.encode(),addr)
         else:
             if len(message)<=self.max_byte('send'):
                 # send message
-                sock.send(message.encode())
+                self.sock.sendto(message.encode(),addr)
                 # Update params
                 self.sent_bytes += len(message)
                 self.rem_power -= self.power_loss(message,'send')
@@ -120,114 +123,6 @@ class RPL(threading.Thread):
             return True
         return False
 
-    def set_best_parent(self,sink):
-        # Check whether sink is deleted for other nodes
-        if sink in self.best_parent:
-            self.best_parent[sink]['is_best'] = 1
-
-    def send_dis(self,dest):
-        '''Broadcast an DIS message'''
-        self.dis_id += 1
-        message = 'DIS|%s|%s|%s|\r\n'%(self.dis_id,self.node_id,dest)
-        for parent in list(self.parents):
-            # Check key exist or not due to dictionary change size during iteration
-            if parent in self.parents:self.send(self.parents[parent],message)
-
-    def process_dis(self,message):
-        '''Process an incoming DIS request'''
-        dis_id = message[1]
-        orig = message[2]
-        dest = message[3]
-        if self.node_id == orig:
-            return
-        if orig in self.dis_id_list:
-            # Discard duplicate DIS mesage
-            if self.dis_id_list[orig] == dis_id:
-                return
-        # Buffer dis id
-        self.dis_id_list[orig] = dis_id
-
-        if self.node_id == dest:
-            # Send DIO
-            self.send_dio()
-        else :
-            self.forward_dis(message)
-
-    def forward_dis(self,message):
-        '''Rebroadcast an DIS request'''
-        message = '|'.join(message)
-        for parent in list(self.parents):
-            # Check key exist or not due to dictionary change size during iteration
-            if parent in self.parents:self.send(self.parents[parent],message)
-
-    def send_dio(self,dag_id=None,orig=None,rank=0,dist=0,power=None):
-        '''Broadcast an DIO message'''
-        if not rank:self.dag_id += 1
-        dag_id = dag_id or self.dag_id
-        orig = orig or self.node_id
-        self.rank = rank # rank from sink
-        self.dist = dist # distance from sink
-        power = power or self.INF
-        message = 'DIO|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(dag_id,orig,self.node_id,*self.coor,self.rank,self.dist,power)
-        for node in self.childs:
-            self.send(self.childs[node],message)
-
-    def process_dio(self,message):
-        '''Process an incoming DIO message'''
-        dag_id = int(message[1])
-        orig = message[2]
-        sender = message[3]
-        coor = message[4].split(',')
-        rank = int(message[5])+1
-        dist = float(message[6])+self.distance(coor)
-        power = min(float(message[7]),self.rem_power)
-        
-        # return if current node is sink
-        if self.node_id==orig:return
-        
-        # Restart timer on getiing rreq
-        if orig in self.timers:
-            # Cancel previous timer
-            self.timers[orig].cancel()
-
-        score = self.obj_func({'dist':dist,'power':power,'rank':rank})
-
-        if orig not in self.best_parent:
-            self.best_parent[orig] = {
-                'dag_id':dag_id,
-                'node_id':sender,
-                'score':score,
-                'is_best':0
-            }
-        elif self.best_parent[orig]['dag_id'] < dag_id:
-            # Update best parent for current dag
-            self.best_parent[orig] = {
-                'dag_id':dag_id,
-                'node_id':sender,
-                'score':score,
-                'is_best':0
-            }
-        elif self.best_parent[orig]['score'] < score:
-            # Update best parent
-            self.best_parent[orig] = {
-                'dag_id':dag_id,
-                'node_id':sender,
-                'score':score,
-                'is_best':0
-            }
-        else:
-            # Add timer
-            self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.set_best_parent,[orig,])
-            # Start timer
-            self.timers[orig].start()
-            return
-        # Send DIO if best parent updated
-        self.send_dio(dag_id,orig,rank,dist,power)
-        # Add timer
-        self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.set_best_parent,[orig,])
-        # Start timer
-        self.timers[orig].start()
-
     def obj_func(self,dictionary):
         score = 0
         for key in dictionary:
@@ -237,20 +132,164 @@ class RPL(threading.Thread):
                 score += dictionary[key]
         return score
 
-    def send_msg(self,dest,msg_data):
+    def send_rreq(self,dest):
+        self.seq_no += 1
+        seq_no = self.seq_no
+        orig = self.node_id
+        sender = self.node_id
+        power = self.INF
+        coor = self.coor
+        dist = 0
+        hop = 0        
+        message = 'RREQ|%s|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(seq_no,orig,sender,dest,*self.coor,hop,dist,power)
+        for child in self.childs:
+            self.send(self.childs[child],message)
+
+    def process_rreq(self,message):
+        '''Process an incoming RREQ message'''
+        # Extract the relevant parameters from the message
+        seq_no = int(message[1])
+        orig = message[2]
+        sender = message[3]
+        dest = message[4]
+        coor = message[5].split(',')
+        hop = int(message[6]) + 1
+        dist = float(message[7])+self.distance(coor)
+        power = min(float(message[8]),self.rem_power)
+        # Cancel previous time
+        if self.node_id == dest:
+            if orig in self.timers:
+                self.timers[orig].cancel()
+        # Check if we are the origin. If we are, discard this RREP.
+        if (self.node_id == orig):
+            return
+        # Calculate score
+        score = self.obj_func({'dist':dist,'power':power,'hop':hop})
+        # Insert or update routing table if needed
+        if orig not in self.routing_table:
+            self.routing_table[orig] = {
+                'Next-Hop': sender,
+                'Seq-No': seq_no,
+                'Hop': hop,
+                'Distance': dist,
+                'Power': power,
+                'Score': score,
+                'Status': 1
+            }
+        elif self.routing_table[orig]['Seq-No'] < seq_no:
+            # Update current path
+            self.routing_table[orig] = {
+                'Next-Hop': sender,
+                'Seq-No': seq_no,
+                'Hop': hop,
+                'Distance': dist,
+                'Power': power,
+                'Score': score,
+                'Status': 1
+            }
+        elif self.routing_table[orig]['Score'] < score:
+            # Update routing table
+            self.routing_table[orig] = {
+                'Next-Hop':sender,
+                'Seq-No': seq_no,
+                'Hop':hop,
+                'Distance': dist,
+                'Power': power,
+                'Score': score,
+                'Status': 1
+            }
+        else:
+            if self.node_id == dest:
+                # Start or restart timer on getiing rreq
+                self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.send_rrep,[orig,])
+                self.timers[orig].start()
+            return
+        if self.node_id == dest:
+            # Start or restart timer on getiing rreq
+            self.timers[orig] = threading.Timer(self.BEST_PATH_WAIT_TIME,self.send_rrep,[orig,])
+            self.timers[orig].start()
+        else:
+            self.forward_rreq(message)
+
+    def forward_rreq(self,message):
+        '''Rebroadcast an RREQ request (Called when RREQ is received by an intermediate node)'''
+        coor = message[5].split(',')
+        message[3] = self.node_id
+        message[5] = '%s,%s'%tuple(self.coor)
+        message[6] = str(int(message[6]) + 1)
+        message[7] = str(float(message[7])+self.distance(coor))
+        message[8] = str(min(float(message[8]),self.rem_power))
+        message = '|'.join(message)
+        for conn in self.childs.values():
+            self.send(conn,message)
+
+    def send_rrep(self,dest):
+        '''Send an RREP message back to the RREQ originator'''
+        self.seq_no += 1
+        seq_no = self.seq_no
+        orig = self.node_id
+        sender = self.node_id
+        power = self.INF
+        coor = self.coor
+        dist = 0
+        hop = 0
+        message = 'RREP|%s|%s|%s|%s|%s,%s|%s|%s|%s|\r\n'%(seq_no,orig,sender,dest,*coor,hop,dist,power)
+        next_hop = self.routing_table[dest]['Next-Hop']
+        self.send(self.parents[next_hop],message)
+
+    def process_rrep(self,message):
+        '''Process an incoming RREP message'''
+        # Extract the relevant fields from the message
+        seq_no = int(message[1])
+        orig = message[2]
+        sender = message[3]
+        dest = message[4]
+        coor = message[5].split(',')
+        hop = int(message[6]) + 1
+        dist = float(message[7])+self.distance(coor)
+        power = min(float(message[8]),self.rem_power)
+
+        score = self.obj_func({'dist':dist,'power':power,'hop':hop})
+        if orig in self.routing_table:
+            if self.routing_table[orig]['Seq-No'] > seq_no:
+                return
+
+        self.routing_table[orig] = {
+            'Next-Hop':sender,
+            'Seq-No': seq_no,
+            'Hop':hop,
+            'Distance': dist,
+            'Power': power,
+            'Score': score,
+            'Status': 1
+        }
+        if self.node_id != dest:
+            self.forward_rrep(message)
+
+    def forward_rrep(self,message):
+        dest = message[4]
+        coor = message[5].split(',')
+        message[3] = self.node_id
+        message[5] = '%s,%s'%tuple(self.coor)
+        message[6] = str(int(message[6]) + 1)
+        message[7] = str(float(message[7])+self.distance(coor))
+        message[8] = str(min(float(message[8]),self.rem_power))
+        message = '|'.join(message)
+        next_hop = self.routing_table[dest]['Next-Hop']
+        self.send(self.parents[next_hop],message)
+
+    def send_user_message(self,dest,msg_data):
         '''Send an USER message'''
         message = 'USER|%s|%s|%s|\r\n'%(self.node_id,dest,msg_data)
-        # Reset best path flag to 0
-        if dest in self.best_parent:
-            self.best_parent[dest]['is_best'] = 0
-        # Broadcast DIS
-        self.send_dis(dest)
+        # Reset routing table status to 0
+        if dest in self.routing_table:
+            self.routing_table[dest]['Status'] = 0
+        self.send_rreq(dest)
         for _ in range(self.MAX_ATTEMPT):
-            if dest in self.best_parent:
-                # Wait until finding the best path
-                if self.best_parent[dest]['is_best']:
-                    best_parent = self.best_parent[dest]['node_id']
-                    self.send(self.parents[best_parent],message)
+            if dest in self.routing_table:
+                if self.routing_table[dest]['Status']:
+                    next_hop = self.routing_table[dest]['Next-Hop']
+                    self.send(self.childs[next_hop],message)
                     # send pending msg if available
                     self.send_pending_msgs(dest)
                     return
@@ -263,18 +302,18 @@ class RPL(threading.Thread):
         '''Send a pending USER message'''
         if dest in self.pending_msg_q:
             while self.pending_msg_q[dest]:
-                if dest in self.best_parent:
+                if dest in self.routing_table:
                     msg = self.pending_msg_q[dest].pop(0)
                     orig = msg['orig']
                     msg_data = msg['msg_data']
                     message = 'USER|%s|%s|%s|\r\n'%(orig,dest,msg_data)
-                    best_parent = self.best_parent[dest]['node_id']
-                    self.send(self.parents[best_parent],message)
+                    next_hop = self.routing_table[dest]['Next-Hop']
+                    self.send(self.childs[next_hop],message)
                 else:
                     return
             self.pending_msg_q.pop(dest)
 
-    def process_msg(self,message):
+    def process_user_message(self,message):
         '''Process an USER message'''
         orig = message[1]
         dest = message[2]
@@ -285,47 +324,47 @@ class RPL(threading.Thread):
             self.msg_box[orig].append({'msg_data':msg_data,'is_read':0})
             print('New message arrived from %s'%orig)
         else:
-            self.forward_msg(message)
+            self.forward_user_message(message)
 
-    def forward_msg(self,message):
+    def forward_user_message(self,message):
         '''Resend an USER message'''
         orig = message[1]
         dest = message[2]
         msg_data = message[3]
         message = '|'.join(message)
-
-        if dest in self.best_parent:
-            best_parent = self.best_parent[dest]['node_id']
-            self.send(self.parents[best_parent],message)
+        if dest in self.routing_table:
+            next_hop = self.routing_table[dest]['Next-Hop']
+            self.send(self.childs[next_hop],message)
         else:
             if dest not in self.pending_msg_q:
                 self.pending_msg_q[dest] = []
             self.pending_msg_q[dest].append({'orig':orig,'msg_data':msg_data})
-            
-    def child_handler(self,conn):
-        try:self.listener(conn)
-        except:pass
+
+    def child_handler(self,child):
+        try:
+            self.listener(self.childs[child])
+        except:
+            for table in list(self.routing_table):
+                if self.routing_table[table]['Next-Hop'] == child:
+                    self.routing_table.pop(table,None)
 
     def run(self):
-        while True:
-            try:
-                conn , _ = self.sock.accept()
-                self.childs[conn.recv(21).decode()] = conn
-                threading.Thread(target=self.child_handler,args=(conn,)).start()
-            except:
-                print('Connection closed\n')
-                break
+        try:
+            self.listener(self.sock)
+        except Exception as e:
+            print('Connection closed')
 
-class Node(RPL):
+class Node(AODV):
     def __init__(self,addr,power,dist_range):
         coor = [random.randint(*dist_range), random.randint(*dist_range)]
         super(Node,self).__init__(addr,coor,power)
 
 class Network:
-    MAX_ATTEMPT = 50
+
+    MAX_ATTEMPT = 100
     ATTEMPT_WAIT_TIME = 0.2
 
-    def __init__(self,no_of_node=20,initial_node_power=20,dist_range=[0,50],ip='127.0.0.1',start_port=8000):
+    def __init__(self,no_of_node=30,initial_node_power=50,dist_range=[0,50],ip='127.0.0.1',start_port=8000):
         self.no_of_node = no_of_node
         self.nodes = {}
         for i in range(no_of_node):
@@ -341,31 +380,29 @@ class Network:
                 if node1 != node2:
                     if self.nodes[node1].is_neighbour(self.nodes[node2].coor):
                         if node1 not in self.nodes[node2].parents:
-                            self.nodes[node2].connect(self.nodes[node1].addr)
+                            self.nodes[node2].add_parent(self.nodes[node1].addr)
+                        if node2 not in self.nodes[node1].childs:
+                            self.nodes[node1].add_child(self.nodes[node2].addr)
                     else:
                         # Remove from childs and close conn
+                        if node1 in self.nodes[node2].parents:
+                            self.nodes[node2].remove_parent(self.nodes[node1].addr)
                         if node2 in self.nodes[node1].childs:
-                            conn = self.nodes[node1].childs.pop(node2)
-                            conn.close()
+                            self.nodes[node1].remove_child(self.nodes[node2].addr)
 
     def shutdown(self):
-        for node in self.nodes.values():
-            for child in node.childs.values():
-                child.close()
-            node.sock.close()
+        for node in self.nodes:
+            self.nodes[node].sock.close()
 
     def reset(self,factor):
         for node in self.nodes:
-            self.nodes[node].metric = {'dist':-0.01,'rank': -1+factor,'power':factor}
+            self.nodes[node].metric = {'dist':-0.01,'hop': -1+factor,'power':factor}
+            self.nodes[node].seq_no = 0
             self.nodes[node].rem_power = self.nodes[node].init_power
-            self.nodes[node].rank = None
-            self.nodes[node].dist = None
-            self.dis_id = 0
-            self.dag_id = 0
             self.nodes[node].sent_bytes = 0
             self.nodes[node].received_bytes = 0
-            self.timers = {}
-            self.nodes[node].best_parent = {}
+            self.nodes[node].routing_table = {}
+            self.nodes[node].timers = {}
             self.nodes[node].msg_box = {}
             self.nodes[node].pending_msg_q = {}
 
@@ -381,11 +418,30 @@ class Network:
                 total += node.received_bytes+node.sent_bytes
             transfer.append(total/self.no_of_node)
             power_factor.append(i)
+        plt.figure(figsize=(30,15),dpi=200)
         plt.plot(power_factor,transfer)
         plt.xlabel('Power Factor')
         plt.ylabel('Energy Transfer')
         plt.title("Energy Transfer vs Power Factor", fontsize='large')
         plt.show()
+
+    def plot_dest_connection(self,dest):
+        self.init_neighbour()
+        for node in self.nodes.values():
+            if dest in node.routing_table:
+                node.routing_table[dest]['Status'] = 0
+        for node in self.nodes.values():
+            if node.node_id != dest:
+                node.send_rreq(dest)
+                for _ in range(self.MAX_ATTEMPT):
+                    if dest in node.routing_table:
+                        if node.routing_table[dest]['Status']:
+                            route = node.routing_table[dest]
+                            x = [self.nodes[route['Next-Hop']].coor[0],node.coor[0]]
+                            y = [self.nodes[route['Next-Hop']].coor[1],node.coor[1]]
+                            plt.plot(x, y, '-o')
+                            break
+                    time.sleep(self.ATTEMPT_WAIT_TIME)
 
     def plot_neighbour_connection(self):
         for node in self.nodes:
@@ -393,24 +449,7 @@ class Network:
                 x = [self.nodes[node].coor[0],self.nodes[child].coor[0]]
                 y = [self.nodes[node].coor[1],self.nodes[child].coor[1]]
                 plt.plot(x, y, '-o')
-
-    def plot_dest_connection(self,dest):
-        self.init_neighbour()
-        for node in self.nodes.values():
-            if dest in node.best_parent:
-                node.best_parent[dest]['is_best'] = 0
-        self.nodes[dest].send_dio()
-        for node in self.nodes.values():
-            for _ in range(self.MAX_ATTEMPT):
-                if dest in node.best_parent:
-                    if node.best_parent[dest]['is_best']:
-                        best_parent = self.nodes[node.best_parent[dest]['node_id']]
-                        x = [best_parent.coor[0],node.coor[0]]
-                        y = [best_parent.coor[1],node.coor[1]]
-                        plt.plot(x, y, '-o')
-                        break
-                time.sleep(self.ATTEMPT_WAIT_TIME)
-
+ 
     def plot_network(self):
         x=[]
         y=[]
@@ -428,12 +467,12 @@ class Network:
 
     def start_session(self,dest,no=1):
         count = 0
-        while count != no or no==-1: # -1 for infinite
+        while count != no or no != -1:
             for node in self.nodes:
                 if node != dest:
                     sent = False
                     self.init_neighbour()
-                    self.nodes[node].send_msg(dest,'PING')
+                    self.nodes[node].send_user_message(dest,'PING')
                     # Check whether msg reaches to dest
                     for _ in range(self.MAX_ATTEMPT):
                         if node in self.nodes[dest].msg_box:
@@ -489,6 +528,7 @@ class Network:
         polygon_area = (1/(n*T))*sum([(n-i+1/2)*b[i-1] for i in range(1,n+1)])
         gini_coefficient = 1-2*polygon_area
         # Lorenz curve
+        plt.figure(figsize=(30,15),dpi=200)
         plt.plot(x,y,label="Lorenz curve")
         # Line of perfect equality
         plt.plot([x[0],x[-1]],[y[0],y[-1]],label="Line of perfect equality")
@@ -513,6 +553,7 @@ class Network:
             self.start_session(dest,no)
             gini_index.append(self.gini_coefficient())
             power_factor.append(i)
+        plt.figure(figsize=(30,15),dpi=200)
         plt.plot(power_factor,gini_index)
         plt.xlabel('Power Factor')
         plt.ylabel('Gini Coefficient')
@@ -527,6 +568,7 @@ class Network:
             self.reset(i)
             max_session.append(self.start_session(dest,-1))
             power_factor.append(i)
+        plt.figure(figsize=(30,15),dpi=200)
         plt.plot(power_factor,max_session)
         plt.xlabel('Power Factor')
         plt.ylabel('No of session')
@@ -550,7 +592,7 @@ class Network:
         x,y,z = x.ravel(),y.ravel(),z.ravel()
         b = np.zeros_like(z)
         c = list(map(lambda y:plt.cm.RdYlGn(y),y))
-        fig = plt.figure()
+        fig = plt.figure(figsize=(30,15),dpi=200)
         ax = fig.gca(projection='3d')
         ax.bar3d(x,y, b, 0, 0.05, z, shade=True,color=c, alpha=0.8)
         ax.set_zlabel('No of nodes')
@@ -565,9 +607,11 @@ network = Network()
 network.plot_network()
 network.plot_neighbour_connection()
 network.plot_network()
-network.plot_dest_connection('127.0.0.1:8019')
-network.plot_transfer_stat('127.0.0.1:8019',3)
-network.plot_gini_stat('127.0.0.1:8019',3)
-network.plot_max_session('127.0.0.1:8019')
-network.plot_energy_stat('127.0.0.1:8019',3)
-network.nodes['127.0.0.1:8019'].msg_box
+network.plot_dest_connection('127.0.0.1:8029')
+network.reset(0.0)
+network.start_session('127.0.0.1:8029',-1)
+network.plot_transfer_stat('127.0.0.1:8029',3)
+network.plot_gini_stat('127.0.0.1:8029',3)
+network.plot_max_session('127.0.0.1:8029')
+network.plot_energy_stat('127.0.0.1:8029',3)
+network.nodes['127.0.0.1:8029'].msg_box
