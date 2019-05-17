@@ -566,6 +566,29 @@ class Network:
         plt.grid(True)
         plt.show()
 
+    def plot_msg_delivery_stat(self,dest,no=1):
+        x = np.arange(0.0,1.2, 0.2)
+        y = np.arange(1,self.no_of_node+1,1)
+        y, x = np.meshgrid(y,x)
+        z = np.zeros_like(y)
+        for i,factor in enumerate(x[:,0]):
+            print('%s%s%s'%('-'*18,round(factor,1),'-'*18))
+            self.reset(factor)
+            self.start_session(dest,no)
+            for j,node in enumerate(self.nodes.values()):
+                z[i][j] = node.sent_bytes+node.received_bytes
+        x,y,z = x.ravel(),y.ravel(),z.ravel()
+        b = np.zeros_like(z)
+        c = list(map(lambda z:plt.cm.RdYlGn(z),z/z.max()))
+        fig = plt.figure(figsize=(30,15),dpi=200)
+        ax = fig.gca(projection='3d')
+        ax.bar3d(x,y, b, 0, 0.05, z, shade=True,color=c, alpha=0.8)
+        ax.set_zlabel('Data Transfer(Bytes)')
+        ax.set_xlabel('Power Factor')
+        ax.set_ylabel('Node')
+        plt.grid(True)
+        plt.show()
+
 try:network.shutdown()
 except:pass
 network = Network()
@@ -579,4 +602,5 @@ network.plot_transfer_stat('127.0.0.1:8029',3)
 network.plot_gini_stat('127.0.0.1:8029',3)
 network.plot_max_session('127.0.0.1:8029')
 network.plot_energy_stat('127.0.0.1:8029',3)
+network.plot_msg_delivery_stat('127.0.0.1:8029',3)
 network.nodes['127.0.0.1:8029'].msg_box
