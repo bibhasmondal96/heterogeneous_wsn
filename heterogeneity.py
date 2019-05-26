@@ -4,7 +4,8 @@ matplotlib.use("TkAgg")
 import tkinter as tk
 from tkinter import ttk
 from PIL import ImageGrab
-from network import Network
+from network import NetworkRPL
+from network import NetworkAODV
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -71,9 +72,9 @@ class ControlView(tk.Frame):
         self.controller = controller
         pad = {'pady':5,'padx':5,'expand':1}
 
-        var = tk.StringVar(self)
-        var.set('RPL')
-        option = tk.OptionMenu(self, var, "RPL", "AODV")
+        self.var = tk.StringVar(self)
+        self.var.set('RPL')
+        option = tk.OptionMenu(self, self.var, "RPL", "AODV")
         option.pack(**pad)
 
         button1 = ttk.Button(self,text="Create netrork", command=lambda: self.network())
@@ -258,11 +259,13 @@ class ListView(tk.Frame):
     def __init__(self, parent, controller):
         tk.Frame.__init__(self, parent)
         self.controller = controller
+        self.Network = {'RPL':NetworkRPL,'AODV':NetworkAODV}
         self.listbox = tk.Listbox(self,selectbackground="green",selectmode='extended')
         self.listbox.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True,padx=10,pady=10)
     def insert(self,value):
-        self.controller.networks.append(Network(value,self.controller.initial_node_power,self.controller.dist_range,self.controller.ip,self.controller.start_port,self.controller.print_func))
-        self.listbox.insert(self.listbox.size(),"Network (%s)"%value)
+        protocol = self.controller.frame3.var.get()
+        self.controller.networks.append(self.Network[protocol](value,self.controller.initial_node_power,self.controller.dist_range,self.controller.ip,self.controller.start_port,self.controller.print_func))
+        self.listbox.insert(self.listbox.size(),"%s Network (%s)"%(protocol,value))
         self.controller.start_port += value
 
 class GraphView(tk.Frame):

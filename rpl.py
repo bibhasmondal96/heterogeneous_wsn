@@ -255,7 +255,7 @@ class RPL(threading.Thread):
                 if self.best_parent[dest]['is_best']:
                     best_parent = self.best_parent[dest]['node_id']
                     self.print('Hop: %s, Path power: %s, Node power: %s\n'%(self.rank,self.best_parent[dest]['power'],self.rem_power))
-                    self.print(self.node_id+'->')
+                    self.print('Path: %s->'%self.node_id)
                     self.send(self.parents[best_parent],message)
                     # send pending msg if available
                     self.send_pending_msgs(dest)
