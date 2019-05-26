@@ -1,6 +1,6 @@
 import random
-from rpl import RPL
-from aodv import AODV
+from .rpl import RPL
+from .aodv import AODV
 
 class NodeRPL(RPL):
     def __init__(self,addr,power,dist_range,print_func):

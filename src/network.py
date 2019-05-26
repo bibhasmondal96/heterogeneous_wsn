@@ -1,7 +1,7 @@
 import time
 import numpy as np
-from node import NodeRPL
-from node import NodeAODV
+from .node import NodeRPL
+from .node import NodeAODV
 import matplotlib.pyplot as plt
 
 class NetworkRPL:

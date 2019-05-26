@@ -4,8 +4,8 @@ matplotlib.use("TkAgg")
 import tkinter as tk
 from tkinter import ttk
 from PIL import ImageGrab
-from network import NetworkRPL
-from network import NetworkAODV
+from .network import NetworkRPL
+from .network import NetworkAODV
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -303,6 +303,3 @@ class GraphView(tk.Frame):
 
     def onPick(self,event):
         self.draw("plt_node_neighbour",node_index = event.ind[0])
-
-app = Heterogeneity()
-app.mainloop()

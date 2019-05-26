@@ -13,7 +13,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python heterogeneity.py
+python main.py
 ```
 
 ## Contributing
