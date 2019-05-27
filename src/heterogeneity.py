@@ -70,59 +70,62 @@ class ControlView(tk.Frame):
     def __init__(self, parent, controller):
         tk.Frame.__init__(self,parent)
         self.controller = controller
-        pad = {'pady':5,'padx':5,'expand':1}
+
+        pad = {'pady':5,'padx':5}
+        size = {'width':30}
 
         self.var = tk.StringVar(self)
         self.var.set('RPL')
         option = tk.OptionMenu(self, self.var, "RPL", "AODV")
         option.pack(**pad)
+        option.config(width=25)
 
-        button1 = ttk.Button(self,text="Create netrork", command=lambda: self.network())
+        button1 = ttk.Button(self,text="Create netrork", command=self.network,**size)
         button1.pack(**pad)
 
-        button2 = ttk.Button(self, text="Start season", command=self.season)
+        button2 = ttk.Button(self, text="Start season", command=self.season,**size)
         button2.pack(**pad)
 
-        button3 = ttk.Button(self, text="Start session until first death", command=self.run_until_first_death)
+        button3 = ttk.Button(self, text="Start session until first death", command=self.run_until_first_death,**size)
         button3.pack(**pad)
 
-        button4 = ttk.Button(self, text="Networks energy status", command=self.plot_netrorks_energy)
+        button4 = ttk.Button(self, text="Networks energy status", command=self.plot_netrorks_energy,**size)
         button4.pack(**pad)
 
-        button5 = ttk.Button(self, text="Neighbours connection", command=self.plt_neighbours_connection)
+        button5 = ttk.Button(self, text="Neighbours connection", command=self.plt_neighbours_connection,**size)
         button5.pack(**pad)
 
-        button6 = ttk.Button(self, text="Destination connection", command=self.plt_dest_connection)
+        button6 = ttk.Button(self, text="Destination connection", command=self.plt_dest_connection,**size)
         button6.pack(**pad)
 
-        button7 = ttk.Button(self, text="Lorentz curve", command=self.plt_lorentz_curve)
+        button7 = ttk.Button(self, text="Lorentz curve", command=self.plt_lorentz_curve,**size)
         button7.pack(**pad)
 
-        button8 = ttk.Button(self, text="Max session status", command=self.plt_max_session)
+        button8 = ttk.Button(self, text="Max session status", command=self.plt_max_session,**size)
         button8.pack(**pad)
 
-        button9 = ttk.Button(self, text="Max session gini status", command=self.plt_max_gini_stat)
+        button9 = ttk.Button(self, text="Max session gini status", command=self.plt_max_gini_stat,**size)
         button9.pack(**pad)
 
-        button10 = ttk.Button(self, text="First death gini status", command=self.plt_death_gini_stat)
+        button10 = ttk.Button(self, text="First death gini status", command=self.plt_death_gini_stat,**size)
         button10.pack(**pad)
 
-        button11 = ttk.Button(self, text="Max session energy status", command=self.plt_max_energy_stat)
+        button11 = ttk.Button(self, text="Max session energy status", command=self.plt_max_energy_stat,**size)
         button11.pack(**pad)
 
-        button12 = ttk.Button(self, text="First death energy status", command=self.plt_death_energy_stat)
+        button12 = ttk.Button(self, text="First death energy status", command=self.plt_death_energy_stat,**size)
         button12.pack(**pad)
 
-        button13 = ttk.Button(self, text="Max session data transfer status", command=self.plt_max_msg_delivery_stat)
+        button13 = ttk.Button(self, text="Max session data transfer status", command=self.plt_max_msg_delivery_stat,**size)
         button13.pack(**pad)
 
-        button14 = ttk.Button(self, text="First death data transfer status", command=self.plt_death_msg_delivery_stat)
+        button14 = ttk.Button(self, text="First death data transfer status", command=self.plt_death_msg_delivery_stat,**size)
         button14.pack(**pad)
 
-        button15 = ttk.Button(self, text="Reset", command=self.reset)
+        button15 = ttk.Button(self, text="Reset", command=self.reset,**size)
         button15.pack(**pad)
 
-        button16 = ttk.Button(self, text="Screenshot", command=self.screenshot)
+        button16 = ttk.Button(self, text="Screenshot", command=self.screenshot,**size)
         button16.pack(**pad)
 
     def run_until_first_death(self):
